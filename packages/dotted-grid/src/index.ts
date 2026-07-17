@@ -5,9 +5,14 @@ const DEFAULTS = {
 	contrast: 1.1, // luminance contrast around 0.5
 	color: "", // dot color; empty => read --color-fg
 	background: "", // backdrop color; empty => read --color-bg
+	colorReveal: 120, // pointer trail radius (CSS px) when `color-reveal` is empty
+	shimmer: 8, // percent of dots that flash when `shimmer` is empty
+	revealBoost: 1, // vividness of revealed color: 0 = raw sample, 1 = "ascii" pop
 } as const;
 
 const MAX_DPR = 2; // clamp devicePixelRatio so 4K/retina stays affordable
+const MAX_TRAIL = 32; // pointer samples kept for the color-reveal trail
+const TRAIL_MS = 600; // trail lifetime — longer than fade-in so dots trail out slowly
 
 /**
  * `<dotted-grid src="/videos/fabric.web.mp4">` — renders a video as an animated
@@ -16,19 +21,26 @@ const MAX_DPR = 2; // clamp devicePixelRatio so 4K/retina stays affordable
  * dot whose radius tracks local brightness.
  *
  * Attributes (all live-updatable):
- *   src         video URL (required)
- *   cell-size   grid cell size in CSS px (default 6)
- *   dot-scale   max dot radius as fraction of cell half-size (default 0.85)
- *   invert      boolean; flips the brightness->radius mapping
- *   color       dot color (default: CSS --color-fg)
- *   background  backdrop color (default: CSS --color-bg)
- *   gamma       luminance exponent (default 0.8)
- *   contrast    luminance contrast (default 1.1)
- *   paused      boolean; freezes the animation
+ *   src           video URL (required)
+ *   cell-size     grid cell size in CSS px (default 6)
+ *   dot-scale     max dot radius as fraction of cell half-size (default 0.85)
+ *   invert        boolean; flips the brightness->radius mapping
+ *   color         dot color (default: CSS --color-fg)
+ *   background    backdrop color (default: CSS --color-bg)
+ *   gamma         luminance exponent (default 0.8)
+ *   contrast      luminance contrast (default 1.1)
+ *   paused        boolean; freezes the animation
+ *   color-reveal  pointer trail radius in CSS px; dots within it show the video's
+ *                 true color, fading in fast and out slow (comet trail). Absent
+ *                 => no trail; empty => default radius.
+ *   shimmer       percent (0-100) of dots that spontaneously flash to their true
+ *                 color and fade, for ambient life. Absent => off; empty => default.
+ *   reveal-boost  0..1; how far a revealed dot's color snaps to the nearest vivid
+ *                 ANSI terminal color (default 1). 0 = raw sampled color; 1 = full
+ *                 "ascii" pop so reveals stay vivid over a dark video.
  *
- * Forward-looking seams (declared, currently inert): a `uMouse` uniform for
- * future grid warp / dot bump, and `uColorRestore` for painting source color
- * inside dots. Wiring them later needs no structural change here.
+ * The color reveal (trail + shimmer) is disabled while paused or under
+ * prefers-reduced-motion, matching the animation gating.
  *
  * Lifecycle mirrors the other packages (gallery-carousel): a `listeners`
  * cleanup array, a `rafId` guard, a `ResizeObserver`, and reduced-motion
@@ -48,6 +60,9 @@ export class DottedGridElement extends HTMLElement {
 			"gamma",
 			"contrast",
 			"paused",
+			"color-reveal",
+			"shimmer",
+			"reveal-boost",
 		];
 	}
 
@@ -68,6 +83,13 @@ export class DottedGridElement extends HTMLElement {
 
 	private visible = true; // in viewport (IntersectionObserver)
 	private textureReady = false; // has at least one frame been uploaded
+
+	// Recent pointer positions (device px, canvas-relative) with timestamps,
+	// newest last. Drives the color-reveal comet trail; ages out over TRAIL_MS.
+	private trail: Array<{ x: number; y: number; t: number }> = [];
+	// Preallocated upload buffers so render() doesn't allocate per frame.
+	private trailXY = new Float32Array(MAX_TRAIL * 2);
+	private trailAge = new Float32Array(MAX_TRAIL);
 
 	connectedCallback() {
 		this.canvas = document.createElement("canvas");
@@ -93,6 +115,17 @@ export class DottedGridElement extends HTMLElement {
 		this.reducedMotion.addEventListener("change", onMotionChange);
 		this.listeners.push(() =>
 			this.reducedMotion?.removeEventListener("change", onMotionChange)
+		);
+
+		// Pointer trail for the color reveal. Always listen; the shader ignores the
+		// trail when `color-reveal` is absent. On pointer leave we simply stop
+		// adding samples — the existing ones age out over TRAIL_MS for a natural
+		// fade. The reveal only shows while playing, when the RAF loop is already
+		// running, so recording a sample is all we need here.
+		const onPointerMove = (e: PointerEvent) => this.pushTrail(e);
+		this.addEventListener("pointermove", onPointerMove);
+		this.listeners.push(() =>
+			this.removeEventListener("pointermove", onPointerMove)
 		);
 
 		this.resizeObserver = new ResizeObserver(() => this.resize());
@@ -123,6 +156,7 @@ export class DottedGridElement extends HTMLElement {
 
 		this.listeners.forEach((off) => off());
 		this.listeners = [];
+		this.trail = [];
 
 		if (this.video) {
 			this.video.pause();
@@ -213,6 +247,7 @@ export class DottedGridElement extends HTMLElement {
 
 		const fs = `#version 300 es
 		precision highp float;
+		#define MAX_TRAIL ${MAX_TRAIL}
 		in vec2 vUv;
 		out vec4 fragColor;
 
@@ -226,8 +261,16 @@ export class DottedGridElement extends HTMLElement {
 		uniform float uContrast;
 		uniform vec3 uColor;        // dot color
 		uniform vec3 uBg;           // backdrop color
-		uniform vec2 uMouse;        // reserved (grid warp / bump) — currently inert
-		uniform float uColorRestore;// reserved (0 = off) — currently inert
+
+		// Color reveal: dots within the trail radius or caught by the shimmer show
+		// their true sampled color instead of the flat uColor.
+		uniform vec2 uTrail[MAX_TRAIL]; // recent pointer positions, device px
+		uniform float uTrailAge[MAX_TRAIL]; // 0 = newest .. 1 = oldest
+		uniform int uTrailCount;    // active samples (0 => trail off)
+		uniform float uRevealRadius;// pointer influence radius, device px
+		uniform float uTime;        // seconds, for the shimmer pulse
+		uniform float uShimmer;     // fraction 0..1 of dots that shimmer (0 => off)
+		uniform float uRevealBoost; // 0 = raw sampled color, 1 = snap to ANSI palette
 
 		// "cover" mapping: fit the video across the canvas without stretching,
 		// centered, cropping the overflowing axis.
@@ -243,6 +286,38 @@ export class DottedGridElement extends HTMLElement {
 		}
 
 		float luma(vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
+
+		// Stable per-cell pseudo-random in [0,1) from integer cell coords.
+		float hash(vec2 cell) {
+			return fract(sin(dot(cell, vec2(12.9898, 78.233))) * 43758.5453);
+		}
+
+		// Snap a sampled color to the nearest vivid ANSI terminal color, giving the
+		// reveal a bright "ascii art" pop. The source is normalized to full value
+		// first (hue preserved, brightness maxed) so even dark pixels resolve to a
+		// vivid palette entry instead of a muddy near-black one. Palette = the 6
+		// bright ANSI hues + bright white (black/greys are intentionally excluded so
+		// revealed dots always pop). uRevealBoost blends raw sample -> snapped.
+		vec3 ansiSnap(vec3 c) {
+			const vec3 PALETTE[7] = vec3[7](
+				vec3(1.0, 0.0, 0.0), // bright red
+				vec3(0.0, 1.0, 0.0), // bright green
+				vec3(1.0, 1.0, 0.0), // bright yellow
+				vec3(0.36, 0.36, 1.0), // bright blue
+				vec3(1.0, 0.0, 1.0), // bright magenta
+				vec3(0.0, 1.0, 1.0), // bright cyan
+				vec3(1.0, 1.0, 1.0)  // bright white
+			);
+			float m = max(max(c.r, c.g), c.b);
+			vec3 norm = c / max(m, 1e-4); // push brightest channel to 1 (keep hue)
+			vec3 best = PALETTE[0];
+			float bestD = 1e9;
+			for (int i = 0; i < 7; i++) {
+				float d = distance(norm, PALETTE[i]);
+				if (d < bestD) { bestD = d; best = PALETTE[i]; }
+			}
+			return mix(c, best, uRevealBoost);
+		}
 
 		void main() {
 			// Work in device pixels so cells are square regardless of aspect.
@@ -270,7 +345,37 @@ export class DottedGridElement extends HTMLElement {
 			float aa = (1.0 / halfCell) * 1.5;
 			float mask = 1.0 - smoothstep(radius - aa, radius + aa, dist);
 
-			vec3 dot = mix(uColor, src, uColorRestore); // uColorRestore=0 => flat color
+			// --- color reveal: how much of the true video color to show here -----
+			// Pointer trail: strongest near a recent sample, decaying with distance
+			// (radial falloff) and sample age (1 - age). Newest sample => full color
+			// (fast fade-in); older samples decay over TRAIL_MS (slow fade-out).
+			float trail = 0.0;
+			for (int i = 0; i < MAX_TRAIL; i++) {
+				if (i >= uTrailCount) break;
+				float d = distance(cellCenterPx, uTrail[i]);
+				float falloff = 1.0 - smoothstep(0.0, uRevealRadius, d);
+				trail = max(trail, falloff * (1.0 - uTrailAge[i]));
+			}
+
+			// Shimmer: a fraction (uShimmer) of cells, chosen by hash, flash to color
+			// on their own cycle. Each participating cell gets a random phase/speed
+			// and a narrow spike per loop so only a few glow at any instant.
+			float shimmer = 0.0;
+			if (uShimmer > 0.0) {
+				float h = hash(cell);
+				if (h < uShimmer) {
+					float speed = 0.15 + hash(cell + 7.0) * 0.35;
+					float phase = hash(cell + 3.0);
+					float cycle = fract(uTime * speed + phase);
+					// Short bright spike (~12% of the cycle) that eases out.
+					shimmer = 1.0 - smoothstep(0.0, 0.12, cycle);
+				}
+			}
+
+			float colorRestore = clamp(max(trail, shimmer), 0.0, 1.0);
+			// Revealed dots show a vivid ANSI-snapped color; unrevealed stay flat.
+			vec3 revealed = ansiSnap(src);
+			vec3 dot = mix(uColor, revealed, colorRestore); // 0 => flat color
 			fragColor = vec4(mix(uBg, dot, mask), 1.0);
 		}`;
 
@@ -308,8 +413,13 @@ export class DottedGridElement extends HTMLElement {
 			"uContrast",
 			"uColor",
 			"uBg",
-			"uMouse",
-			"uColorRestore",
+			"uTrail",
+			"uTrailAge",
+			"uTrailCount",
+			"uRevealRadius",
+			"uTime",
+			"uShimmer",
+			"uRevealBoost",
 		];
 		for (const n of names) this.uniforms[n] = gl.getUniformLocation(program, n);
 		return true;
@@ -370,13 +480,20 @@ export class DottedGridElement extends HTMLElement {
 
 	/** Reconcile play/pause + the RAF loop with paused attr, motion pref, and
 	 * visibility. Animating only runs when playing; otherwise we draw once. */
+	/** True when the effect should animate: not paused, motion allowed, on-screen.
+	 * Also gates the color reveal (off for the static/reduced-motion frame). */
+	private wantsPlay(): boolean {
+		return (
+			!this.hasAttribute("paused") &&
+			!this.reducedMotion?.matches &&
+			this.visible
+		);
+	}
+
 	private applyPlaybackState() {
 		const video = this.video;
 		if (!video) return;
-		const wantPlay =
-			!this.hasAttribute("paused") &&
-			!this.reducedMotion?.matches &&
-			this.visible;
+		const wantPlay = this.wantsPlay();
 
 		if (wantPlay) {
 			video.play().catch(() => {
@@ -447,11 +564,68 @@ export class DottedGridElement extends HTMLElement {
 		gl.uniform1f(this.uniforms.uContrast, this.num("contrast", DEFAULTS.contrast));
 		gl.uniform3f(this.uniforms.uColor, r, g, b);
 		gl.uniform3f(this.uniforms.uBg, br, bg, bb);
-		gl.uniform2f(this.uniforms.uMouse, -1, -1); // inert until wired
-		gl.uniform1f(this.uniforms.uColorRestore, 0); // inert until wired
+		this.uploadReveal(gl, dpr);
 
 		gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 		gl.bindVertexArray(null);
+	}
+
+	// --- color reveal ------------------------------------------------------
+
+	/** Record a pointer position (device px, canvas-relative) for the trail. */
+	private pushTrail(e: PointerEvent) {
+		const canvas = this.canvas;
+		if (!canvas) return;
+		const rect = canvas.getBoundingClientRect();
+		const scaleX = canvas.width / Math.max(1, rect.width);
+		const scaleY = canvas.height / Math.max(1, rect.height);
+		this.trail.push({
+			x: (e.clientX - rect.left) * scaleX,
+			y: (e.clientY - rect.top) * scaleY,
+			t: performance.now(),
+		});
+		if (this.trail.length > MAX_TRAIL) {
+			this.trail.splice(0, this.trail.length - MAX_TRAIL);
+		}
+	}
+
+	/** Upload the trail + shimmer uniforms. Both are silenced while not playing
+	 * (paused / reduced-motion) so the static frame stays flat-colored. */
+	private uploadReveal(gl: WebGL2RenderingContext, dpr: number) {
+		const revealOn = this.hasAttribute("color-reveal") && this.wantsPlay();
+		const now = performance.now();
+
+		let count = 0;
+		if (revealOn) {
+			// Drop expired samples, then take the newest MAX_TRAIL, newest first.
+			this.trail = this.trail.filter((s) => now - s.t <= TRAIL_MS);
+			const start = Math.max(0, this.trail.length - MAX_TRAIL);
+			for (let i = this.trail.length - 1; i >= start; i--) {
+				const s = this.trail[i];
+				this.trailXY[count * 2] = s.x;
+				this.trailXY[count * 2 + 1] = s.y;
+				this.trailAge[count] = (now - s.t) / TRAIL_MS; // 0 newest .. 1 oldest
+				count++;
+			}
+		}
+		gl.uniform2fv(this.uniforms.uTrail, this.trailXY);
+		gl.uniform1fv(this.uniforms.uTrailAge, this.trailAge);
+		gl.uniform1i(this.uniforms.uTrailCount, count);
+		gl.uniform1f(
+			this.uniforms.uRevealRadius,
+			this.num("color-reveal", DEFAULTS.colorReveal) * dpr
+		);
+
+		const shimmerOn = this.hasAttribute("shimmer") && this.wantsPlay();
+		const shimmer = shimmerOn
+			? Math.min(1, this.num("shimmer", DEFAULTS.shimmer) / 100)
+			: 0;
+		gl.uniform1f(this.uniforms.uShimmer, shimmer);
+		gl.uniform1f(this.uniforms.uTime, now / 1000);
+		gl.uniform1f(
+			this.uniforms.uRevealBoost,
+			Math.min(1, this.numZero("reveal-boost", DEFAULTS.revealBoost))
+		);
 	}
 
 	// --- attribute helpers -------------------------------------------------
@@ -465,6 +639,15 @@ export class DottedGridElement extends HTMLElement {
 		if (raw === null) return fallback;
 		const parsed = Number.parseFloat(raw);
 		return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+	}
+
+	/** Like num() but allows 0 (and clamps negatives to 0). Used for levers where
+	 * zero is a valid setting, e.g. reveal-boost=0 (raw color, no ANSI snap). */
+	private numZero(attr: string, fallback: number): number {
+		const raw = this.getAttribute(attr);
+		if (raw === null) return fallback;
+		const parsed = Number.parseFloat(raw);
+		return Number.isFinite(parsed) ? Math.max(0, parsed) : fallback;
 	}
 
 	/**
