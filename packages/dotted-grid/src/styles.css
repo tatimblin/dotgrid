@@ -1,0 +1,27 @@
+dotted-grid {
+	display: block;
+	position: relative;
+	width: 100%;
+	/* No-JS / pre-hydration fallback height; override per-instance. */
+	height: var(--dotted-grid-height, 100vh);
+	background: var(--dotted-grid-bg, var(--color-bg, #000));
+	overflow: hidden;
+}
+
+/* The WebGL canvas fills the element; the source <video> is decoded off-screen
+   purely as a texture source and never painted directly. */
+dotted-grid canvas {
+	display: block;
+	width: 100%;
+	height: 100%;
+}
+
+dotted-grid video {
+	position: absolute;
+	width: 1px;
+	height: 1px;
+	opacity: 0;
+	pointer-events: none;
+	/* Kept in the layout (not display:none) so the browser reliably decodes and
+	   advances frames for autoplay across browsers. */
+}
