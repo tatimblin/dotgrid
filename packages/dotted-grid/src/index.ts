@@ -38,6 +38,9 @@ const TRAIL_MS = 600; // trail lifetime — longer than fade-in so dots trail ou
  *   reveal-boost  0..1; how far a revealed dot's color snaps to the nearest vivid
  *                 ANSI terminal color (default 1). 0 = raw sampled color; 1 = full
  *                 "ascii" pop so reveals stay vivid over a dark video.
+ *   no-loop       boolean; plays the video once instead of looping. On the final
+ *                 frame it dispatches a bubbling `dotted-grid:ended` CustomEvent so
+ *                 a host (e.g. a carousel) can advance. Absent => loops (default).
  *
  * The color reveal (trail + shimmer) is disabled while paused or under
  * prefers-reduced-motion, matching the animation gating.
@@ -63,6 +66,7 @@ export class DottedGridElement extends HTMLElement {
 			"color-reveal",
 			"shimmer",
 			"reveal-boost",
+			"no-loop",
 		];
 	}
 
@@ -201,6 +205,10 @@ export class DottedGridElement extends HTMLElement {
 			this.applyPlaybackState();
 			return;
 		}
+		if (name === "no-loop" && this.video) {
+			this.video.loop = !this.hasAttribute("no-loop");
+			return;
+		}
 		// cell-size / dot-scale / invert / color / background / gamma / contrast:
 		// uniforms are read fresh each draw, so just repaint the current frame.
 		this.scheduleRender();
@@ -212,7 +220,7 @@ export class DottedGridElement extends HTMLElement {
 		const video = document.createElement("video");
 		video.muted = true;
 		video.defaultMuted = true;
-		video.loop = true;
+		video.loop = !this.hasAttribute("no-loop");
 		video.playsInline = true;
 		video.autoplay = true;
 		video.preload = "auto";
@@ -228,6 +236,16 @@ export class DottedGridElement extends HTMLElement {
 			video.removeEventListener("loadeddata", onData);
 			video.removeEventListener("seeked", onData);
 		});
+
+		// With `no-loop`, the video fires `ended` once it reaches its final frame.
+		// Re-broadcast it as a bubbling event so a host carousel can advance. (When
+		// looping — the default — `ended` never fires, so this stays silent.)
+		const onEnded = () =>
+			this.dispatchEvent(
+				new CustomEvent("dotted-grid:ended", { bubbles: true })
+			);
+		video.addEventListener("ended", onEnded);
+		this.listeners.push(() => video.removeEventListener("ended", onEnded));
 		return video;
 	}
 
