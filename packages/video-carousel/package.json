@@ -1,0 +1,11 @@
+{
+  "name": "@whois/video-carousel",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./styles.css": "./src/styles.css"
+  },
+  "files": ["src"]
+}
