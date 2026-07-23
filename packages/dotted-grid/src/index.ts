@@ -1,6 +1,8 @@
 const DEFAULTS = {
 	cellSize: 6, // CSS px per grid cell (drives dot density)
-	dotScale: 0.85, // max dot radius as a fraction of the cell half-size
+	dotScale: 1, // max square half-width as a fraction of the cell half-size;
+	// 1 fills the cell edge-to-edge so the brightest level reads as a solid block
+	levels: 5, // discrete brightness steps (ASCII-ramp look); <=1 => continuous
 	gamma: 0.8, // luminance shaping exponent (>1 darkens mids)
 	contrast: 1.1, // luminance contrast around 0.5
 	color: "", // dot color; empty => read --color-fg
@@ -23,7 +25,11 @@ const TRAIL_MS = 600; // trail lifetime — longer than fade-in so dots trail ou
  * Attributes (all live-updatable):
  *   src           video URL (required)
  *   cell-size     grid cell size in CSS px (default 6)
- *   dot-scale     max dot radius as fraction of cell half-size (default 0.85)
+ *   dot-scale     max square half-width as fraction of cell half-size (default 1;
+ *                 1 fills the cell so the brightest level is a solid block)
+ *   levels        discrete brightness steps for an ASCII-ramp look (default 5);
+ *                 each step is a fixed square size, brightest fills the cell.
+ *                 Set to 1 (or 0) for a smooth, continuous size ramp.
  *   invert        boolean; flips the brightness->radius mapping
  *   color         dot color (default: CSS --color-fg)
  *   background    backdrop color (default: CSS --color-bg)
@@ -57,6 +63,7 @@ export class DottedGridElement extends HTMLElement {
 			"src",
 			"cell-size",
 			"dot-scale",
+			"levels",
 			"invert",
 			"color",
 			"background",
@@ -274,6 +281,7 @@ export class DottedGridElement extends HTMLElement {
 		uniform float uVideoAspect; // video w/h
 		uniform float uCell;        // cell size in device px
 		uniform float uDotScale;    // max radius as fraction of cell half-size
+		uniform float uLevels;      // discrete brightness steps (<=1 => continuous)
 		uniform float uInvert;      // 0 or 1
 		uniform float uGamma;
 		uniform float uContrast;
@@ -354,14 +362,27 @@ export class DottedGridElement extends HTMLElement {
 			// invert: bright cells give small dots instead of large ones.
 			float amount = mix(b, 1.0 - b, uInvert);
 
-			// Distance from the cell center, in units of the cell half-size.
-			float halfCell = uCell * 0.5;
-			float dist = length(px - cellCenterPx) / halfCell;
-			float radius = amount * uDotScale;
+			// ASCII-ramp look: snap brightness to a few discrete steps so the grid
+			// reads as stepped glyph densities rather than a smooth size gradient.
+			// Level 0 is empty; the top level fills the whole cell (solid block).
+			if (uLevels > 1.0) {
+				float step = round(amount * uLevels) / uLevels;
+				amount = step;
+			}
 
-			// Anti-aliased dot edge (one device-pixel feather).
-			float aa = (1.0 / halfCell) * 1.5;
-			float mask = 1.0 - smoothstep(radius - aa, radius + aa, dist);
+			// Axis-aligned square dot, centered in the cell. We build it as a
+			// per-axis box (product of two independent 1D edges) rather than a
+			// Chebyshev max() distance: the derivative of max() is discontinuous
+			// along the cell diagonals, so fwidth()-based AA spikes there and the
+			// corners read as stray triangles/arrows. Two smooth axis edges have
+			// no such spike, giving clean corners and a constant ~1px feather.
+			float halfCell = uCell * 0.5;
+			vec2 d = abs(px - cellCenterPx);              // device px from center
+			float halfW = amount * uDotScale * halfCell;  // square half-width, device px
+			vec2 aa = fwidth(d);                          // ~1px per axis
+			vec2 edge = 1.0 - smoothstep(halfW - aa, halfW + aa, d);
+			// halfW == 0 (empty level) must stay fully dark, not a half-lit pixel.
+			float mask = (halfW > 0.0) ? edge.x * edge.y : 0.0;
 
 			// --- color reveal: how much of the true video color to show here -----
 			// Pointer trail: strongest near a recent sample, decaying with distance
@@ -426,6 +447,7 @@ export class DottedGridElement extends HTMLElement {
 			"uVideoAspect",
 			"uCell",
 			"uDotScale",
+			"uLevels",
 			"uInvert",
 			"uGamma",
 			"uContrast",
@@ -577,6 +599,7 @@ export class DottedGridElement extends HTMLElement {
 		gl.uniform1f(this.uniforms.uVideoAspect, aspect);
 		gl.uniform1f(this.uniforms.uCell, this.num("cell-size", DEFAULTS.cellSize) * dpr);
 		gl.uniform1f(this.uniforms.uDotScale, this.num("dot-scale", DEFAULTS.dotScale));
+		gl.uniform1f(this.uniforms.uLevels, this.num("levels", DEFAULTS.levels));
 		gl.uniform1f(this.uniforms.uInvert, this.hasAttribute("invert") ? 1 : 0);
 		gl.uniform1f(this.uniforms.uGamma, this.num("gamma", DEFAULTS.gamma));
 		gl.uniform1f(this.uniforms.uContrast, this.num("contrast", DEFAULTS.contrast));
