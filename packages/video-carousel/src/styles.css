@@ -1,16 +1,36 @@
-/* Layout: the halftone stage on the left, the vertical date ruler on its right.
-   The whole thing degrades to a readable stacked block before JS upgrades it. */
+/* Layout: a row of [ vertical ruler + card ]. The card holds the iPhone-portrait
+   (9:16) video with its caption bar beneath, both inside the bordered box. The
+   ruler sits OUTSIDE the card and matches the card's height. On mobile the whole
+   thing stacks and the ruler becomes a horizontal strip below the card (see the
+   orientation logic in index.ts + the horizontal modifier further down). The
+   markup degrades to a readable block before JS upgrades it. */
 video-carousel {
+	display: flex;
+	flex-direction: column;
+	width: 100%;
+	/* Height cap for the portrait video; the card width derives from it via the
+	   ratio so the video stays 9:16 and never gets absurdly tall. */
+	--vc-cap: min(72vh, 34rem);
+	--vc-card-w: calc(var(--vc-cap) * 960 / 1706);
+}
+
+/* Ruler + card share a row; align-items:stretch makes the ruler track the card
+   height. justify-content:flex-end hugs the pair to the right (page) edge. */
+.vc__main {
 	display: flex;
 	gap: var(--space-4, 1rem);
 	align-items: stretch;
+	justify-content: flex-end;
 	width: 100%;
 }
 
+/* The card: portrait video + caption stacked, bordered/clipped. Width capped so
+   the 9:16 video can't exceed the height cap; height grows to video + caption. */
 .vc__stage {
 	position: relative;
 	flex: 1 1 auto;
 	min-width: 0;
+	max-width: var(--vc-card-w);
 	display: flex;
 	flex-direction: column;
 	border: 1px solid var(--color-border, var(--color-accent, #0a84ff));
@@ -26,10 +46,12 @@ video-carousel {
 }
 
 .vc__grid {
-	--dotted-grid-height: min(72vh, 34rem);
+	--dotted-grid-height: auto; /* aspect-ratio drives the height */
 	width: 100%;
+	aspect-ratio: 960 / 1706;
 }
 
+/* Caption bar inside the card, beneath the video: white panel, dark text. */
 .vc__caption {
 	display: flex;
 	flex-wrap: wrap;
@@ -39,8 +61,8 @@ video-carousel {
 	font-size: var(--font-size-base, 1rem);
 	letter-spacing: 0.04em;
 	text-transform: uppercase;
-	color: var(--color-fg, #ededed);
-	border-top: 1px solid var(--color-accent, #0a84ff);
+	color: #111;
+	background: #fff;
 }
 
 .vc__desc {
@@ -48,11 +70,11 @@ video-carousel {
 }
 
 .vc__loc {
-	color: var(--color-muted, #8a8a8a);
+	color: #555;
 }
 
 .vc__date {
-	color: var(--color-muted, #8a8a8a);
+	color: #555;
 	font-variant-numeric: tabular-nums;
 }
 
@@ -67,6 +89,7 @@ video-carousel {
 	/* Fixed width so tick magnification never reflows the layout. Width =
 	   date-label gutter + longest (year) tick + end pad. */
 	--vc-max-tick: 32px;
+	--vc-max-tick-h: 24px; /* horizontal strip: tick growth extent (mobile) */
 	--vc-date-gutter: 4.5rem;
 	--vc-end-pad: var(--space-2, 0.5rem);
 	flex: 0 0 auto;
@@ -159,6 +182,56 @@ video-carousel {
 	pointer-events: none;
 }
 
+/* HORIZONTAL MODIFIER (mobile) ----------------------------------------------
+   JS toggles `.vc__ruler--horizontal` when the strip runs along X. All the
+   vertical rules above are swapped axis-for-axis: the strip lays out ticks by
+   `left`, ticks become vertical bars growing by `height`, year labels sit BELOW
+   their tick, and the marker is a vertical bar at the horizontal center. */
+.vc__ruler--horizontal {
+	width: 100%;
+	/* Room for the tick growth extent + the year-label row below. */
+	height: calc(var(--vc-max-tick-h) + 1.1rem);
+	align-self: auto;
+	cursor: ew-resize;
+	order: 2; /* below the card (ruler is first in DOM order) */
+}
+
+.vc__ruler--horizontal .vc__strip {
+	right: auto;
+	left: 0;
+	top: 0;
+}
+
+.vc__ruler--horizontal .vc__tick {
+	right: auto;
+	top: 0;
+	width: 1px;
+	height: var(--vc-tick-len, 12px);
+	transform: translateX(-50%); /* center on its `left` position */
+	transition: height 0.14s ease, opacity 0.14s ease;
+}
+
+.vc__ruler--horizontal .vc__tick--year {
+	width: 2px;
+	height: var(--vc-tick-len, 22px);
+}
+
+.vc__ruler--horizontal .vc__tick-year {
+	right: auto;
+	left: 50%;
+	top: calc(100% + var(--space-1, 0.25rem));
+	transform: translateX(-50%);
+}
+
+.vc__ruler--horizontal .vc__marker {
+	right: auto;
+	left: 50%;
+	top: 0;
+	width: 2px;
+	height: var(--vc-max-tick-h);
+	transform: translateX(-50%);
+}
+
 /* No-JS fallback: the authored per-clip buttons render as a plain stacked ruler
    before the custom element upgrades them into the scrolling strip. */
 .vc__tick--major {
@@ -185,18 +258,25 @@ video-carousel {
 	}
 }
 
-/* Narrow screens: drop the video above a horizontal-feeling short ruler. The
-   ruler stays a vertical list but the stage takes the full width first. */
+/* Narrow screens: stack the video card on top with the ruler as a horizontal
+   strip below it. `.vc__main` becomes display:contents so the ruler + stage join
+   the <video-carousel> column directly; the ruler's order:2 (from the horizontal
+   modifier) drops it below the stage and caption (both order 0, in DOM order). */
 @media (max-width: 640px) {
-	video-carousel {
-		flex-direction: row;
+	.vc__main {
+		display: contents;
 	}
 
-	.vc__grid {
-		--dotted-grid-height: min(56vh, 26rem);
+	/* Full-width portrait card (9:16 video + caption); the grid's aspect-ratio
+	   governs its height so nothing is cropped. */
+	.vc__stage {
+		max-width: none;
+		width: 100%;
 	}
 
-	.vc__ruler {
-		--vc-date-gutter: 3.5rem;
+	/* Breathing room between the card and the ruler below it (no flex gap here
+	   since .vc__main is display:contents). */
+	.vc__ruler--horizontal {
+		margin-block-start: var(--space-4, 1rem);
 	}
 }

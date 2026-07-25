@@ -110,12 +110,30 @@ export class VideoCarouselElement extends HTMLElement {
 	private settleTimer: number | null = null;
 
 	private dragging = false;
-	private dragStartY = 0; // pointer Y at drag start (client px)
+	private dragStart = 0; // pointer coord (main axis) at drag start (client px)
 	private dragStartOffset = 0; // strip offset at drag start (px)
 	private dragMoved = false; // pointer moved past the tap threshold since down
 
 	private tickSrc = ""; // tick-sound asset URL (from the `tick-src` attr); "" = off
 	private muted = false; // reflects the persisted `sound` preference
+
+	// Orientation: vertical (desktop, ruler beside the video) or horizontal
+	// (mobile, ruler as a strip below the card). The single source of truth for
+	// all axis-dependent geometry — recomputed on connect and on the media query.
+	private orientation: "vertical" | "horizontal" = "vertical";
+	private orientationMQ: MediaQueryList | null = null;
+
+	/** True when the ruler runs along the X axis (mobile). */
+	private get horizontal(): boolean {
+		return this.orientation === "horizontal";
+	}
+
+	/** The ruler's length along its main axis (width when horizontal, else height). */
+	private mainSize(): number {
+		const r = this.ruler;
+		if (!r) return 0;
+		return this.horizontal ? r.clientWidth : r.clientHeight;
+	}
 
 	connectedCallback() {
 		this.grid = this.querySelector("[data-vc-grid]");
@@ -138,6 +156,10 @@ export class VideoCarouselElement extends HTMLElement {
 		}));
 		if (!this.clips.length) return;
 
+		// Orientation drives all axis-dependent geometry; set it before building.
+		this.orientationMQ = window.matchMedia("(max-width: 640px)");
+		this.orientation = this.orientationMQ.matches ? "horizontal" : "vertical";
+
 		this.buildRuler();
 
 		this.reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
@@ -145,6 +167,22 @@ export class VideoCarouselElement extends HTMLElement {
 		this.reducedMotion.addEventListener("change", onMotionChange);
 		this.listeners.push(() =>
 			this.reducedMotion?.removeEventListener("change", onMotionChange)
+		);
+
+		// Flip vertical↔horizontal at the mobile breakpoint. buildRuler() rewrites
+		// tick positions (left vs top) + the modifier class; the pointer/keyboard
+		// listeners bind to the ruler itself (they survive replaceChildren), so we
+		// do NOT re-attach them. scrollToClip re-seats the offset for the new axis.
+		const onOrientationChange = () => {
+			const next = this.orientationMQ?.matches ? "horizontal" : "vertical";
+			if (next === this.orientation) return;
+			this.orientation = next;
+			this.buildRuler();
+			this.scrollToClip(this.current, false);
+		};
+		this.orientationMQ.addEventListener("change", onOrientationChange);
+		this.listeners.push(() =>
+			this.orientationMQ?.removeEventListener("change", onOrientationChange)
 		);
 
 		// Tick sound: preload the asset (if authored) and track the global mute
@@ -195,6 +233,7 @@ export class VideoCarouselElement extends HTMLElement {
 		this.tickTimes = [];
 		this.strip = null;
 		this.marker = null;
+		this.orientationMQ = null;
 	}
 
 	// --- ruler construction ------------------------------------------------
@@ -213,6 +252,7 @@ export class VideoCarouselElement extends HTMLElement {
 		ruler.setAttribute("tabindex", "0");
 		ruler.setAttribute("aria-valuemin", "0");
 		ruler.setAttribute("aria-valuemax", String(this.clips.length - 1));
+		ruler.classList.toggle("vc__ruler--horizontal", this.horizontal);
 
 		// Clip times: parse dates; if any fails, fall back to synthetic spacing so
 		// the ruler still renders sensibly.
@@ -240,7 +280,16 @@ export class VideoCarouselElement extends HTMLElement {
 			const tick = document.createElement("span");
 			tick.className = isYear ? "vc__tick vc__tick--year" : "vc__tick";
 			tick.setAttribute("aria-hidden", "true");
-			tick.style.top = `${(k * TICK_GAP_PX).toFixed(1)}px`;
+			// Position along the strip's main axis; clear the opposite property so a
+			// rebuild after an orientation flip never leaves a stale top/left.
+			const pos = `${(k * TICK_GAP_PX).toFixed(1)}px`;
+			if (this.horizontal) {
+				tick.style.left = pos;
+				tick.style.top = "";
+			} else {
+				tick.style.top = pos;
+				tick.style.left = "";
+			}
 			if (isYear) {
 				const label = document.createElement("span");
 				label.className = "vc__tick-year";
@@ -268,25 +317,28 @@ export class VideoCarouselElement extends HTMLElement {
 		// strip and settles on the clip under the center marker; a tap (no movement
 		// past TAP_SLOP) selects the clip nearest the tapped position.
 		const TAP_SLOP = 4; // px of movement below which a gesture counts as a tap
+		// Pointer coord along the ruler's main axis (X when horizontal, else Y).
+		const coordOf = (e: PointerEvent) => (this.horizontal ? e.clientX : e.clientY);
 		const onPointerDown = (e: PointerEvent) => {
 			this.dragging = true;
 			this.dragMoved = false;
-			this.dragStartY = e.clientY;
+			this.dragStart = coordOf(e);
 			this.dragStartOffset = this.stripOffset;
 			ruler.classList.add("is-dragging");
 			ruler.setPointerCapture(e.pointerId);
 		};
 		const onPointerMove = (e: PointerEvent) => {
 			if (!this.dragging) return;
-			if (Math.abs(e.clientY - this.dragStartY) > TAP_SLOP) this.dragMoved = true;
-			const rect = ruler.getBoundingClientRect();
-			const raw = this.dragStartOffset + (e.clientY - this.dragStartY);
-			this.stripOffset = this.clampOffset(raw, rect.height);
+			const coord = coordOf(e);
+			if (Math.abs(coord - this.dragStart) > TAP_SLOP) this.dragMoved = true;
+			const size = this.mainSize();
+			const raw = this.dragStartOffset + (coord - this.dragStart);
+			this.stripOffset = this.clampOffset(raw, size);
 			this.refresh();
 			// Live scrub: select the clip under the center marker as it passes, so a
 			// drag flashes each video by. scrollToClip() is a no-op on the offset
 			// while dragging (below), so this never yanks the strip off the finger.
-			const idx = this.nearestClip(this.timeAtY(rect.height / 2, rect.height));
+			const idx = this.nearestClip(this.timeAtY(size / 2, size));
 			if (idx !== this.current) this.select(idx, { userDriven: true });
 		};
 		const endDrag = (e: PointerEvent) => {
@@ -299,10 +351,15 @@ export class VideoCarouselElement extends HTMLElement {
 				/* pointer may already be released */
 			}
 			const rect = ruler.getBoundingClientRect();
+			const size = this.horizontal ? rect.width : rect.height;
 			// Drag: snap to the clip at the center marker. Tap: snap to the clip
-			// nearest the tapped Y.
-			const y = this.dragMoved ? rect.height / 2 : e.clientY - rect.top;
-			this.select(this.nearestClip(this.timeAtY(y, rect.height)), {
+			// nearest the tapped position along the main axis.
+			const at = this.dragMoved
+				? size / 2
+				: this.horizontal
+					? e.clientX - rect.left
+					: e.clientY - rect.top;
+			this.select(this.nearestClip(this.timeAtY(at, size)), {
 				userDriven: true,
 			});
 		};
@@ -454,7 +511,7 @@ export class VideoCarouselElement extends HTMLElement {
 		// still settles + tweens normally.
 		if (this.dragging) return;
 
-		this.stripOffset = this.offsetFor(this.clipTimes[i], ruler.clientHeight);
+		this.stripOffset = this.offsetFor(this.clipTimes[i], this.mainSize());
 
 		const tween = animate && !this.reducedMotion?.matches;
 		strip.classList.toggle("is-settling", tween);
@@ -496,18 +553,21 @@ export class VideoCarouselElement extends HTMLElement {
 			const strip = this.strip;
 			if (!ruler || !strip) return;
 
-			strip.style.transform = `translateY(${this.stripOffset.toFixed(1)}px)`;
+			void ruler;
+			strip.style.transform = this.horizontal
+				? `translateX(${this.stripOffset.toFixed(1)}px)`
+				: `translateY(${this.stripOffset.toFixed(1)}px)`;
 
-			const centerY = ruler.clientHeight / 2;
+			const center = this.mainSize() / 2;
 			for (let i = 0; i < this.tickEls.length; i++) {
 				const tick = this.tickEls[i];
 				const kind = tick.classList.contains("vc__tick--year")
 					? TICK.year
 					: TICK.cadence;
-				// Screen Y of this tick relative to the ruler = strip top offset +
+				// Screen position of this tick along the main axis = strip offset +
 				// its position in the strip.
-				const screenY = this.stripOffset + this.tickY(this.tickTimes[i]);
-				const dist = Math.abs(screenY - centerY);
+				const screen = this.stripOffset + this.tickY(this.tickTimes[i]);
+				const dist = Math.abs(screen - center);
 
 				const eased = smoothstep(1 - dist / MAGNIFY_SPREAD);
 				const len = kind.base + (kind.max - kind.base) * MAGNIFY_GAIN * eased;
