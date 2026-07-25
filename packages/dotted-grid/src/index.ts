@@ -139,6 +139,15 @@ export class DottedGridElement extends HTMLElement {
 			this.removeEventListener("pointermove", onPointerMove)
 		);
 
+		// Repaint when the page theme flips. The color/background uniforms are read
+		// fresh each draw, so a running loop already re-tints; this covers the
+		// paused / reduced-motion case where no loop is painting.
+		const onThemeChange = () => this.scheduleRender();
+		document.addEventListener("themechange", onThemeChange);
+		this.listeners.push(() =>
+			document.removeEventListener("themechange", onThemeChange)
+		);
+
 		this.resizeObserver = new ResizeObserver(() => this.resize());
 		this.resizeObserver.observe(this);
 
@@ -219,6 +228,24 @@ export class DottedGridElement extends HTMLElement {
 		// cell-size / dot-scale / invert / color / background / gamma / contrast:
 		// uniforms are read fresh each draw, so just repaint the current frame.
 		this.scheduleRender();
+	}
+
+	/**
+	 * Restart playback of the CURRENT video from its first frame. Useful for a host
+	 * that "advances" to a clip using the same `src` as the current one (e.g. a
+	 * carousel wrapping from its last clip back to a first clip that reuses the same
+	 * file): re-setting an unchanged `src` attribute wouldn't reload, and with
+	 * `no-loop` the video is parked on its final frame, so seek to 0 and play.
+	 */
+	replay() {
+		const video = this.video;
+		if (!video) return;
+		try {
+			video.currentTime = 0;
+		} catch {
+			/* seeking may throw before metadata; play() below still restarts it */
+		}
+		this.applyPlaybackState();
 	}
 
 	// --- setup -------------------------------------------------------------

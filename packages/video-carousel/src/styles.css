@@ -57,103 +57,130 @@ video-carousel {
 }
 
 /* RULER ---------------------------------------------------------------------
-   A vertical column of horizontal bars. Each bar's length is driven by
-   --vc-tick-len (set from JS as the magnification falloff); before JS it falls
-   back to a sensible resting length so the ruler still reads as a ruler. */
+   A fixed selection marker at the vertical center with a strip of uniformly
+   spaced tick bars scrolling behind it (maximeheckel.com's reading-progress
+   ruler). The strip is a single translateY-driven container; each tick's length
+   is driven by --vc-tick-len (a gentle magnification near the center, set from
+   JS) and falls back to a resting length so the ruler reads before JS. */
 .vc__ruler {
 	position: relative;
-	/* Fixed width so tick magnification never reflows the layout: a shrink-to-fit
-	   ruler would track its widest tick, so mid-drag (ticks shorter than the
-	   settled 40px selection) the column narrows and the flexible stage widens,
-	   then snaps back on release. Width = date-label gutter + max tick + end pad. */
-	--vc-max-tick: 40px;
+	/* Fixed width so tick magnification never reflows the layout. Width =
+	   date-label gutter + longest (year) tick + end pad. */
+	--vc-max-tick: 32px;
 	--vc-date-gutter: 4.5rem;
 	--vc-end-pad: var(--space-2, 0.5rem);
 	flex: 0 0 auto;
 	width: calc(var(--vc-date-gutter) + var(--vc-max-tick) + var(--vc-end-pad));
 	align-self: stretch;
 	box-sizing: border-box;
-	/* Ticks are absolutely positioned from JS (fisheye warp), so the ruler is
-	   just their positioning context. Ticks anchor to the right (toward the
-	   video) and grow leftward; the date label floats on the far left. */
+	overflow: hidden; /* clip the scrolling strip at the ruler bounds */
 	cursor: ns-resize;
 	touch-action: none; /* let the element own vertical drags */
+	/* No focus outline: the whole column is `align-self: stretch`, so an outline
+	   traces a distracting full-height box. Instead the ruler rests dimmed and
+	   returns to full opacity when active — that perceivable state change IS the
+	   visible focus indicator (WCAG 2.4.7). */
 	outline: none;
+	opacity: var(--vc-rest-opacity, 0.5);
+	transition: opacity 0.2s ease;
 }
 
-.vc__ruler:focus-visible {
-	outline: 2px solid var(--color-accent, #0a84ff);
-	outline-offset: 4px;
-	border-radius: var(--radius, 12px);
+/* Brighten to full opacity when active. :focus-within is the keyboard-focus cue
+   (the ruler is the focusable node); :hover and .is-dragging make it equally
+   discoverable for pointer users. */
+.vc__ruler:hover,
+.vc__ruler:focus-within,
+.vc__ruler.is-dragging {
+	opacity: 1;
+}
+
+/* The scrolling tick strip. JS sets its transform (translateY); ticks are laid
+   out along it with a static `top`. A settling transition animates autoplay /
+   keyboard steps; it's suppressed mid-drag via `.is-dragging`. */
+.vc__strip {
+	position: absolute;
+	right: var(--vc-end-pad, 0.5rem);
+	top: 0;
+	left: 0;
+	will-change: transform;
+}
+
+.vc__strip.is-settling {
+	transition: transform 0.42s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.vc__ruler.is-dragging .vc__strip {
+	transition: none;
 }
 
 .vc__tick {
-	/* JS sets --vc-tick-y (center, px from ruler top) and --vc-tick-len (width).
-	   Anchored to the right edge so ticks grow leftward toward the date gutter. */
+	/* Anchored to the strip's right edge so ticks grow leftward toward the date
+	   gutter. JS sets `top` (static, per tick) and --vc-tick-len / --vc-tick-op. */
 	position: absolute;
-	right: var(--vc-end-pad, 0.5rem);
-	top: var(--vc-tick-y, 0px);
+	right: 0;
 	transform: translateY(-50%);
 	display: block;
+	height: 1px;
+	width: var(--vc-tick-len, 12px);
+	background: var(--color-fg, #ededed);
+	opacity: var(--vc-tick-op, 1);
+	transition: width 0.14s ease, opacity 0.14s ease;
+}
+
+/* Year-boundary (January) ticks: longer and a touch bolder, carrying the year. */
+.vc__tick--year {
+	width: var(--vc-tick-len, 22px);
 	height: 2px;
-	width: var(--vc-tick-len, 16px);
+}
+
+/* Small year text to the left of a year tick. */
+.vc__tick-year {
+	position: absolute;
+	right: calc(100% + var(--space-2, 0.5rem));
+	top: 50%;
+	transform: translateY(-50%);
+	font-size: 0.7rem;
+	font-variant-numeric: tabular-nums;
+	letter-spacing: 0.04em;
+	color: var(--color-muted, #8a8a8a);
+	white-space: nowrap;
+}
+
+/* Fixed selection marker at the ruler's vertical center. */
+.vc__marker {
+	position: absolute;
+	right: var(--vc-end-pad, 0.5rem);
+	top: 50%;
+	transform: translateY(-50%);
+	height: 2px;
+	width: var(--vc-max-tick);
+	border-radius: 1px;
+	background: var(--color-accent, #0a84ff);
+	pointer-events: none;
+}
+
+/* No-JS fallback: the authored per-clip buttons render as a plain stacked ruler
+   before the custom element upgrades them into the scrolling strip. */
+.vc__tick--major {
+	position: relative;
+	display: block;
+	width: 20px;
+	height: 2px;
+	margin: 0.75rem 0 0.75rem auto;
 	padding: 0;
 	border: 0;
 	border-radius: 1px;
 	background: var(--color-fg, #ededed);
-	/* Opacity fades with distance from the focus (set from JS); falls back to a
-	   readable default before JS runs. */
-	opacity: var(--vc-tick-op, 1);
-	transition: width 0.14s ease, opacity 0.14s ease, background-color 0.2s ease;
-}
-
-.vc__tick--minor {
-	width: var(--vc-tick-len, 8px);
-	opacity: var(--vc-tick-op, 0.4);
-}
-
-.vc__tick--major {
-	width: var(--vc-tick-len, 20px);
 	cursor: pointer;
 	appearance: none;
 	-webkit-appearance: none;
 }
 
-.vc__tick--major:hover {
-	opacity: 0.85;
-}
-
-/* The active clip's tick: the reference's red marker (site accent is blue, but
-   the selected tick pops against the neutral bars either way). */
-.vc__tick--selected {
-	background: var(--color-accent, #0a84ff);
-	opacity: 1;
-}
-
-/* Floating date beside the selected tick, on the ruler's left; JS positions it
-   vertically via --vc-date-y. Anchored to the right edge of the date gutter and
-   right-aligned, so the text keeps a clear gap from the longest tick and grows
-   leftward into empty space instead of colliding with the tick line. */
-.vc__ruler-date {
-	position: absolute;
-	right: calc(var(--vc-max-tick) + var(--vc-end-pad) + var(--space-3, 0.75rem));
-	left: 0;
-	top: var(--vc-date-y, 50%);
-	transform: translateY(-50%);
-	text-align: right;
-	font-size: var(--font-size-base, 1rem);
-	font-variant-numeric: tabular-nums;
-	letter-spacing: 0.02em;
-	color: var(--color-accent, #0a84ff);
-	white-space: nowrap;
-	pointer-events: none;
-	transition: top 0.14s ease;
-}
-
 @media (prefers-reduced-motion: reduce) {
 	.vc__stage,
 	.vc__tick,
-	.vc__ruler-date {
+	.vc__strip,
+	.vc__ruler {
 		transition: none;
 	}
 }
@@ -171,9 +198,5 @@ video-carousel {
 
 	.vc__ruler {
 		--vc-date-gutter: 3.5rem;
-	}
-
-	.vc__ruler-date {
-		font-size: 0.8rem;
 	}
 }
