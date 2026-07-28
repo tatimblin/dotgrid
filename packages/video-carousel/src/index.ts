@@ -156,6 +156,15 @@ export class VideoCarouselElement extends HTMLElement {
 		}));
 		if (!this.clips.length) return;
 
+		// Ruler side: `ruler-side="right"` places the ruler to the RIGHT of the card
+		// (default "left"). A pure CSS concern in the vertical orientation (tick math
+		// is symmetric about the strip), so we just toggle the modifier class on the
+		// host; styles.css mirrors the anchoring. Unaffected by the mobile flip.
+		this.classList.toggle(
+			"vc--ruler-right",
+			this.getAttribute("ruler-side") === "right"
+		);
+
 		// Orientation drives all axis-dependent geometry; set it before building.
 		this.orientationMQ = window.matchMedia("(max-width: 640px)");
 		this.orientation = this.orientationMQ.matches ? "horizontal" : "vertical";

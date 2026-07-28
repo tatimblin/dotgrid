@@ -12,6 +12,14 @@ video-carousel {
 	   ratio so the video stays 9:16 and never gets absurdly tall. */
 	--vc-cap: min(72vh, 34rem);
 	--vc-card-w: calc(var(--vc-cap) * 960 / 1706);
+	/* Total ruler width (date-label gutter + longest tick + end pad). Hoisted to
+	   the host so a consumer can reserve the same amount of gutter space when the
+	   ruler sits OUTSIDE a bounded layout (e.g. `ruler-side="right"` protruding
+	   past a grid column). The .vc__ruler component vars below feed this. */
+	--vc-ruler-w: calc(
+		var(--vc-date-gutter, 4.5rem) + var(--vc-max-tick, 32px) +
+			var(--vc-end-pad, var(--space-2, 0.5rem))
+	);
 }
 
 /* Ruler + card share a row; align-items:stretch makes the ruler track the card
@@ -93,7 +101,7 @@ video-carousel {
 	--vc-date-gutter: 4.5rem;
 	--vc-end-pad: var(--space-2, 0.5rem);
 	flex: 0 0 auto;
-	width: calc(var(--vc-date-gutter) + var(--vc-max-tick) + var(--vc-end-pad));
+	width: var(--vc-ruler-w);
 	align-self: stretch;
 	box-sizing: border-box;
 	overflow: hidden; /* clip the scrolling strip at the ruler bounds */
@@ -180,6 +188,42 @@ video-carousel {
 	border-radius: 1px;
 	background: var(--color-accent, #0a84ff);
 	pointer-events: none;
+}
+
+/* RULER-RIGHT MODIFIER -------------------------------------------------------
+   Mirror image of the default (ruler-left) vertical layout: the card comes
+   first and the ruler sits to its RIGHT. The pair hugs the LEFT edge so the
+   card aligns to the start of its container and the ruler protrudes right (a
+   consumer can reserve --vc-ruler-w of space for it). Every axis anchor that
+   pointed at the ruler's right edge flips to its left: ticks grow rightward,
+   year labels sit to the RIGHT of their tick, and the marker pins left.
+   Toggled by JS (`.vc--ruler-right` on the host, from the `ruler-side` attr).
+   Only applies while vertical — the horizontal (mobile) modifier below is
+   axis-agnostic and unaffected. */
+.vc--ruler-right .vc__main {
+	justify-content: flex-start;
+}
+.vc--ruler-right .vc__stage {
+	order: 1;
+}
+.vc--ruler-right .vc__ruler:not(.vc__ruler--horizontal) {
+	order: 2;
+}
+.vc--ruler-right .vc__ruler:not(.vc__ruler--horizontal) .vc__strip {
+	right: auto;
+	left: var(--vc-end-pad, 0.5rem);
+}
+.vc--ruler-right .vc__ruler:not(.vc__ruler--horizontal) .vc__tick {
+	right: auto;
+	left: 0;
+}
+.vc--ruler-right .vc__ruler:not(.vc__ruler--horizontal) .vc__tick-year {
+	right: auto;
+	left: calc(100% + var(--space-2, 0.5rem));
+}
+.vc--ruler-right .vc__ruler:not(.vc__ruler--horizontal) .vc__marker {
+	right: auto;
+	left: var(--vc-end-pad, 0.5rem);
 }
 
 /* HORIZONTAL MODIFIER (mobile) ----------------------------------------------
