@@ -14,6 +14,7 @@ const TICK = {
 } as const;
 const SWAP_MS = 260; // crossfade dip duration when the clip changes
 const SETTLE_MS = 420; // strip scroll animation duration for autoplay/keyboard steps
+const TICK_MIN_GAP_MS = 55; // min gap between tick sounds so a fast scrub can't machine-gun them
 
 /** Month name → 0-based index, covering full names and the abbreviations the
  *  clip metadata uses (including the non-standard "Sept"). */
@@ -89,7 +90,6 @@ export class VideoCarouselElement extends HTMLElement {
 	private ruler: HTMLElement | null = null;
 	private descEl: HTMLElement | null = null;
 	private locEl: HTMLElement | null = null;
-	private dateEl: HTMLElement | null = null;
 	private stage: HTMLElement | null = null;
 	private strip: HTMLElement | null = null;
 	private marker: HTMLElement | null = null;
@@ -116,6 +116,7 @@ export class VideoCarouselElement extends HTMLElement {
 
 	private tickSrc = ""; // tick-sound asset URL (from the `tick-src` attr); "" = off
 	private muted = false; // reflects the persisted `sound` preference
+	private lastTickAt = 0; // timestamp of the last emitted tick (ms), for throttling
 
 	// Orientation: vertical (desktop, ruler beside the video) or horizontal
 	// (mobile, ruler as a strip below the card). The single source of truth for
@@ -141,7 +142,6 @@ export class VideoCarouselElement extends HTMLElement {
 		this.stage = this.querySelector<HTMLElement>("[data-vc-stage]");
 		this.descEl = this.querySelector<HTMLElement>("[data-vc-desc]");
 		this.locEl = this.querySelector<HTMLElement>("[data-vc-loc]");
-		this.dateEl = this.querySelector<HTMLElement>("[data-vc-date]");
 		if (!this.grid || !this.ruler) return;
 
 		const majorTicks = Array.from(
@@ -248,6 +248,37 @@ export class VideoCarouselElement extends HTMLElement {
 	// --- ruler construction ------------------------------------------------
 
 	/**
+	 * Fan out runs of clips that parsed to the SAME continuous time so each gets a
+	 * distinct, monotonically increasing position. Without this, month-precise dates
+	 * make consecutive same-month clips share one strip offset: `nearestClip` can
+	 * only ever return the run's first member (so the inner clips are unreachable by
+	 * drag/tap) and the selection sits frozen across the run before jumping. Members
+	 * after the first are pushed forward across at most one cadence step's worth of
+	 * room (never past the next distinct time), keeping the ruler chronological.
+	 */
+	private spreadSameTimeClips() {
+		const n = this.clipTimes.length;
+		let i = 0;
+		while (i < n) {
+			let j = i + 1;
+			while (j < n && this.clipTimes[j] === this.clipTimes[i]) j++;
+			const runLen = j - i;
+			if (runLen > 1) {
+				const base = this.clipTimes[i];
+				// Room to fan into: up to the next distinct time, but no more than one
+				// cadence step so the run stays visually clustered on the ruler.
+				const next = j < n ? this.clipTimes[j] : base + STEP_YEARS;
+				const room = Math.min(STEP_YEARS, next - base);
+				const gap = room / runLen; // leave a slot before `next`, keep order strict
+				for (let k = 1; k < runLen; k++) {
+					this.clipTimes[i + k] = base + gap * k;
+				}
+			}
+			i = j;
+		}
+	}
+
+	/**
 	 * Build the continuous time axis from the clip dates, generate the uniformly
 	 * spaced cadence tick strip (year-boundary ticks enlarged and labelled), and
 	 * add the fixed center marker + fixed date label. The scrolling strip and the
@@ -269,6 +300,14 @@ export class VideoCarouselElement extends HTMLElement {
 		if (this.clipTimes.some((t) => !Number.isFinite(t))) {
 			this.clipTimes = this.clips.map((_, i) => i * STEP_YEARS);
 		}
+
+		// Dates are only month-precise, so runs of clips sharing a month (e.g. four
+		// "April 2025" clips) collapse onto ONE strip offset — dragging can't land on
+		// the inner ones and the selection sits dead across a run, then jumps. Nudge
+		// each same-time run into distinct, still-chronological sub-positions: keep
+		// the first member on its true time and fan the rest forward across a slice of
+		// the room before the next distinct date (capped so they stay within a tick).
+		this.spreadSameTimeClips();
 
 		// Snap the axis to whole cadence steps and pad one step on each end so the
 		// first/last clip is never flush against a strip edge.
@@ -347,7 +386,7 @@ export class VideoCarouselElement extends HTMLElement {
 			// Live scrub: select the clip under the center marker as it passes, so a
 			// drag flashes each video by. scrollToClip() is a no-op on the offset
 			// while dragging (below), so this never yanks the strip off the finger.
-			const idx = this.nearestClip(this.timeAtY(size / 2, size));
+			const idx = this.scrubClip(this.timeAtY(size / 2, size));
 			if (idx !== this.current) this.select(idx, { userDriven: true });
 		};
 		const endDrag = (e: PointerEvent) => {
@@ -433,6 +472,22 @@ export class VideoCarouselElement extends HTMLElement {
 		return Math.max(min, Math.min(max, offset));
 	}
 
+	/**
+	 * Live-scrub selection with hysteresis. Unlike `nearestClip` (which flips at
+	 * the midpoint between two clips — so pointer jitter near that midpoint chatters
+	 * A↔B↔A and machine-guns the tick sound), this only leaves the current clip once
+	 * the marker actually crosses a NEIGHBOUR's position. Between two clips it holds
+	 * the current one, giving each a full "dead zone" up to the next clip's time.
+	 */
+	private scrubClip(time: number): number {
+		let i = this.current;
+		// Walk toward the marker one clip at a time; stop as soon as the marker
+		// hasn't yet reached the next neighbour in that direction.
+		while (i + 1 < this.clipTimes.length && time >= this.clipTimes[i + 1]) i++;
+		while (i - 1 >= 0 && time <= this.clipTimes[i - 1]) i--;
+		return i;
+	}
+
 	/** Index of the clip whose time is nearest a given continuous time. */
 	private nearestClip(time: number): number {
 		let nearest = 0;
@@ -476,9 +531,15 @@ export class VideoCarouselElement extends HTMLElement {
 		this.current = index;
 
 		// Tick on user-driven changes only (not autoplay, not a no-op re-select).
+		// Throttle to TICK_MIN_GAP_MS: a fast drag-scrub crosses many clips within a
+		// few ms, and one overlapping tick per clip stacks into a glitchy buzz.
 		if (userDriven && changed && !this.muted && this.tickSrc) {
-			resumeTick(); // the interaction is a gesture — unlocks the context first time
-			playTick(this.tickSrc);
+			const now = performance.now();
+			if (now - this.lastTickAt >= TICK_MIN_GAP_MS) {
+				this.lastTickAt = now;
+				resumeTick(); // the interaction is a gesture — unlocks the context first time
+				playTick(this.tickSrc);
+			}
 		}
 
 		if (this.grid) {
@@ -495,7 +556,6 @@ export class VideoCarouselElement extends HTMLElement {
 
 		if (this.descEl) this.descEl.textContent = clip.desc;
 		if (this.locEl) this.locEl.textContent = clip.loc;
-		if (this.dateEl) this.dateEl.textContent = clip.date;
 
 		this.ruler?.setAttribute("aria-valuenow", String(index));
 		this.ruler?.setAttribute(

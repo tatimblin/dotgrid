@@ -65,8 +65,8 @@ video-carousel {
 	flex-wrap: wrap;
 	justify-content: space-between;
 	gap: var(--space-2, 0.5rem);
-	padding: var(--space-3, 0.75rem) var(--space-4, 1rem);
-	font-size: var(--font-size-base, 1rem);
+	padding: var(--space-2, 0.5rem) var(--space-3, 0.75rem);
+	font-size: var(--font-size-1, 0.8125rem);
 	letter-spacing: 0.04em;
 	text-transform: uppercase;
 	color: #111;
@@ -79,11 +79,6 @@ video-carousel {
 
 .vc__loc {
 	color: #555;
-}
-
-.vc__date {
-	color: #555;
-	font-variant-numeric: tabular-nums;
 }
 
 /* RULER ---------------------------------------------------------------------
@@ -107,6 +102,9 @@ video-carousel {
 	overflow: hidden; /* clip the scrolling strip at the ruler bounds */
 	cursor: ns-resize;
 	touch-action: none; /* let the element own vertical drags */
+	/* Dragging the ruler otherwise text-selects the year labels/ticks. */
+	user-select: none;
+	-webkit-user-select: none;
 	/* No focus outline: the whole column is `align-self: stretch`, so an outline
 	   traces a distracting full-height box. Instead the ruler rests dimmed and
 	   returns to full opacity when active — that perceivable state change IS the
