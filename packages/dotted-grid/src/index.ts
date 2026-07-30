@@ -7,9 +7,9 @@ const DEFAULTS = {
 	contrast: 1.1, // luminance contrast around 0.5
 	color: "", // dot color; empty => read --color-fg
 	background: "", // backdrop color; empty => read --color-bg
-	colorReveal: 120, // pointer trail radius (CSS px) when `color-reveal` is empty
+	colorReveal: 80, // pointer trail radius (CSS px) when `color-reveal` is empty
 	shimmer: 8, // percent of dots that flash when `shimmer` is empty
-	revealBoost: 1, // vividness of revealed color: 0 = raw sample, 1 = "ascii" pop
+	revealBoost: 0.3, // vividness of revealed color: 0 = raw sample, 1 = "ascii" pop
 } as const;
 
 const MAX_DPR = 2; // clamp devicePixelRatio so 4K/retina stays affordable
@@ -340,6 +340,14 @@ export class DottedGridElement extends HTMLElement {
 
 		float luma(vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
 
+		// Highlight lift: the brightest cells blend from uColor toward the contrast
+		// pole of the background (white on a dark bg, black on a light bg) so
+		// highlights glow instead of reading as same-color-but-bigger dots. Automatic
+		// and uniform — no attribute. HI_THRESHOLD is where the lift starts on the
+		// shaped brightness; HI_STRENGTH is how far it goes at full brightness.
+		const float HI_THRESHOLD = 0.75;
+		const float HI_STRENGTH = 0.85;
+
 		// Stable per-cell pseudo-random in [0,1) from integer cell coords.
 		float hash(vec2 cell) {
 			return fract(sin(dot(cell, vec2(12.9898, 78.233))) * 43758.5453);
@@ -442,6 +450,18 @@ export class DottedGridElement extends HTMLElement {
 			// Revealed dots show a vivid ANSI-snapped color; unrevealed stay flat.
 			vec3 revealed = ansiSnap(src);
 			vec3 dot = mix(uColor, revealed, colorRestore); // 0 => flat color
+
+			// Highlight lift: push the brightest cells toward the background's
+			// contrast pole so they glow. Keyed on amount (the value that drives
+			// dot size, so the biggest dots glow — and it stays correct under
+			// invert, where amount differs from b). Attenuated by (1 - colorRestore)
+			// so a dot currently showing its revealed/shimmer color keeps it instead
+			// of being washed toward the pole. Pole derived from uBg => theme-safe
+			// (both consumers hardcode uColor; only the bg flips with theme).
+			vec3 hiPole = mix(vec3(1.0), vec3(0.0), step(0.5, luma(uBg)));
+			float hiLift = smoothstep(HI_THRESHOLD, 1.0, amount) * HI_STRENGTH * (1.0 - colorRestore);
+			dot = mix(dot, hiPole, hiLift);
+
 			fragColor = vec4(mix(uBg, dot, mask), 1.0);
 		}`;
 
