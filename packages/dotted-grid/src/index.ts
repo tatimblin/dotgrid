@@ -90,6 +90,15 @@ export class DottedGridElement extends HTMLElement {
 	private intersectionObserver: IntersectionObserver | null = null;
 	private reducedMotion: MediaQueryList | null = null;
 	private listeners: Array<() => void> = [];
+	// The animation loop. We prefer requestVideoFrameCallback (rVFC) so the shader
+	// runs at the video's true frame rate (~30fps) instead of the display's 60fps —
+	// re-uploading + re-shading an unchanged frame is otherwise ~half the GPU work.
+	// Firefox lacks rVFC, so we fall back to requestAnimationFrame. The two use
+	// different cancel APIs, so `useVfc` records which handle `frameHandle` holds.
+	// `scheduleRender` still uses `rafId` for its one-shot paints.
+	private playing = false;
+	private useVfc = false;
+	private frameHandle: number | null = null;
 	private rafId: number | null = null;
 
 	private visible = true; // in viewport (IntersectionObserver)
@@ -166,6 +175,7 @@ export class DottedGridElement extends HTMLElement {
 	}
 
 	disconnectedCallback() {
+		this.stopLoop(); // cancels the rVFC/rAF loop via the correct API
 		if (this.rafId !== null) cancelAnimationFrame(this.rafId);
 		this.rafId = null;
 
@@ -448,8 +458,13 @@ export class DottedGridElement extends HTMLElement {
 
 			float colorRestore = clamp(max(trail, shimmer), 0.0, 1.0);
 			// Revealed dots show a vivid ANSI-snapped color; unrevealed stay flat.
-			vec3 revealed = ansiSnap(src);
-			vec3 dot = mix(uColor, revealed, colorRestore); // 0 => flat color
+			// Guard the ansiSnap() palette search so it only runs where a dot is
+			// actually revealed — most cells have colorRestore == 0 and would just
+			// discard the result, so this skips the 7-iteration loop grid-wide.
+			vec3 dot = uColor;
+			if (colorRestore > 0.0) {
+				dot = mix(uColor, ansiSnap(src), colorRestore);
+			}
 
 			// Highlight lift: push the brightest cells toward the background's
 			// contrast pole so they glow. Keyed on amount (the value that drives
@@ -550,11 +565,23 @@ export class DottedGridElement extends HTMLElement {
 
 	// --- sizing & playback -------------------------------------------------
 
+	/**
+	 * Device-pixel ratio to render at, clamped so fill cost stays affordable. On
+	 * small (mobile) viewports the cap drops to 1.5 — phone GPUs are fill-bound and
+	 * a 2x→1.5x drop is ~44% fewer fragments for a barely-perceptible softening of
+	 * the dot feather. Desktop keeps the full MAX_DPR. Read fresh each time so the
+	 * ResizeObserver re-evaluates it on rotation / viewport changes.
+	 */
+	private effectiveDpr(): number {
+		const cap = window.matchMedia("(max-width: 768px)").matches ? 1.5 : MAX_DPR;
+		return Math.min(window.devicePixelRatio || 1, cap);
+	}
+
 	private resize() {
 		const gl = this.gl;
 		const canvas = this.canvas;
 		if (!gl || !canvas) return;
-		const dpr = Math.min(window.devicePixelRatio || 1, MAX_DPR);
+		const dpr = this.effectiveDpr();
 		const w = Math.max(1, Math.round(this.clientWidth * dpr));
 		const h = Math.max(1, Math.round(this.clientHeight * dpr));
 		if (canvas.width !== w || canvas.height !== h) {
@@ -595,24 +622,51 @@ export class DottedGridElement extends HTMLElement {
 	}
 
 	private startLoop() {
-		if (this.rafId !== null) return;
-		const tick = () => {
-			this.rafId = requestAnimationFrame(tick);
-			this.render();
+		if (this.playing) return;
+		this.playing = true;
+		const video = this.video as HTMLVideoElement & {
+			requestVideoFrameCallback?: (cb: () => void) => number;
 		};
-		this.rafId = requestAnimationFrame(tick);
+		if (video && typeof video.requestVideoFrameCallback === "function") {
+			// rVFC path: fires once per decoded frame, so the shader tracks the
+			// video's real cadence instead of the display refresh rate.
+			this.useVfc = true;
+			const tick = () => {
+				if (!this.playing) return;
+				this.frameHandle = video.requestVideoFrameCallback!(tick);
+				this.render();
+			};
+			this.frameHandle = video.requestVideoFrameCallback(tick);
+		} else {
+			// Firefox fallback: display-synced rAF loop (the previous behavior).
+			this.useVfc = false;
+			const tick = () => {
+				this.frameHandle = requestAnimationFrame(tick);
+				this.render();
+			};
+			this.frameHandle = requestAnimationFrame(tick);
+		}
 	}
 
 	private stopLoop() {
-		if (this.rafId !== null) cancelAnimationFrame(this.rafId);
-		this.rafId = null;
+		if (this.frameHandle !== null) {
+			const video = this.video as HTMLVideoElement & {
+				cancelVideoFrameCallback?: (h: number) => void;
+			};
+			if (this.useVfc) video?.cancelVideoFrameCallback?.(this.frameHandle);
+			else cancelAnimationFrame(this.frameHandle);
+		}
+		this.frameHandle = null;
+		this.playing = false;
 	}
 
 	/** One-shot repaint (used when paused / on attr or size change). */
 	private scheduleRender() {
-		if (this.rafId !== null) return; // the loop is already painting
-		requestAnimationFrame(() => {
-			if (this.rafId === null) this.render();
+		if (this.playing) return; // the loop is already painting
+		if (this.rafId !== null) return; // a one-shot is already queued
+		this.rafId = requestAnimationFrame(() => {
+			this.rafId = null;
+			if (!this.playing) this.render();
 		});
 	}
 
@@ -632,7 +686,7 @@ export class DottedGridElement extends HTMLElement {
 		}
 		if (!this.textureReady) return; // nothing to show yet
 
-		const dpr = Math.min(window.devicePixelRatio || 1, MAX_DPR);
+		const dpr = this.effectiveDpr();
 		const [r, g, b] = this.readColor("color", "--color-fg", [0.9, 0.9, 0.9]);
 		const [br, bg, bb] = this.readColor("background", "--color-bg", [0, 0, 0]);
 		const aspect = video.videoWidth / Math.max(1, video.videoHeight);
