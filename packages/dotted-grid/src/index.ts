@@ -566,15 +566,23 @@ export class DottedGridElement extends HTMLElement {
 	// --- sizing & playback -------------------------------------------------
 
 	/**
-	 * Device-pixel ratio to render at, clamped so fill cost stays affordable. On
-	 * small (mobile) viewports the cap drops to 1.5 — phone GPUs are fill-bound and
-	 * a 2x→1.5x drop is ~44% fewer fragments for a barely-perceptible softening of
-	 * the dot feather. Desktop keeps the full MAX_DPR. Read fresh each time so the
-	 * ResizeObserver re-evaluates it on rotation / viewport changes.
+	 * Device-pixel ratio to render at, clamped so fill cost stays affordable while
+	 * keeping the compositor's canvas→physical-pixel upscale at an INTEGER ratio.
+	 *
+	 * The dot grid is a regular lattice, so a non-integer upscale resamples it and
+	 * the rows/columns beat against the physical pixel grid — visible plaid/moiré.
+	 * A flat cap like 1.5 triggers exactly this on a DPR-2 phone (2/1.5 = 1.33x).
+	 * So instead of capping to a fixed number, we render at devicePixelRatio
+	 * divided by the smallest integer that brings it within MAX_DPR:
+	 *   DPR 1 → 1 (1x),  DPR 2 → 2 (1x upscale),  DPR 3 → 1.5 (2x upscale, integer).
+	 * Every result composites at a whole-number ratio, so the lattice stays crisp,
+	 * and DPR-3 devices still save ~44% of the fragments vs rendering at 3x.
+	 * Read fresh each time so the ResizeObserver re-evaluates it on rotation.
 	 */
 	private effectiveDpr(): number {
-		const cap = window.matchMedia("(max-width: 768px)").matches ? 1.5 : MAX_DPR;
-		return Math.min(window.devicePixelRatio || 1, cap);
+		const dpr = window.devicePixelRatio || 1;
+		const divisor = Math.ceil(dpr / MAX_DPR); // 1 for dpr<=2, 2 for dpr in (2,4]
+		return dpr / divisor;
 	}
 
 	private resize() {
