@@ -23,7 +23,10 @@ const TRAIL_MS = 600; // trail lifetime — longer than fade-in so dots trail ou
  * dot whose radius tracks local brightness.
  *
  * Attributes (all live-updatable):
- *   src           video URL (required)
+ *   src           video URL (required; H.264 mp4 — the universal fallback)
+ *   src-webm      optional WebM (AV1/VP9) URL preferred over `src` where the
+ *                 browser can play it. When set, the <video> is fed an ordered
+ *                 <source> list (webm, then mp4) so the browser picks the best.
  *   cell-size     grid cell size in CSS px (default 6)
  *   dot-scale     max square half-width as fraction of cell half-size (default 1;
  *                 1 fills the cell so the brightest level is a solid block)
@@ -61,6 +64,7 @@ export class DottedGridElement extends HTMLElement {
 	static get observedAttributes() {
 		return [
 			"src",
+			"src-webm",
 			"cell-size",
 			"dot-scale",
 			"levels",
@@ -78,7 +82,19 @@ export class DottedGridElement extends HTMLElement {
 	}
 
 	private canvas: HTMLCanvasElement | null = null;
+	// Double-buffered <video>: `video` is the one currently rendered; `nextVideo`
+	// is where an incoming clip decodes off-screen during a src swap. When its first
+	// frame is ready we flip the pointer so the swap is gapless (no black dip). Hero
+	// single-`src` usages only ever touch `video`; `nextVideo` stays null.
 	private video: HTMLVideoElement | null = null;
+	private nextVideo: HTMLVideoElement | null = null;
+	// Cleanup for the in-flight nextVideo's readiness listener, so a rapid second
+	// swap can cancel the first without leaking handlers.
+	private pendingSwapCleanup: (() => void) | null = null;
+	// Per-video listener teardown (loadeddata/seeked/ended). Videos are created and
+	// retired across swaps, so each carries its own cleanup rather than sharing the
+	// element-lifetime `listeners` array.
+	private videoCleanups = new WeakMap<HTMLVideoElement, () => void>();
 	private gl: WebGL2RenderingContext | null = null;
 	private program: WebGLProgram | null = null;
 	private vao: WebGLVertexArrayObject | null = null;
@@ -188,11 +204,18 @@ export class DottedGridElement extends HTMLElement {
 		this.listeners = [];
 		this.trail = [];
 
+		// Cancel any in-flight swap and retire its off-screen buffer.
+		if (this.pendingSwapCleanup) {
+			this.pendingSwapCleanup();
+			this.pendingSwapCleanup = null;
+		}
+		if (this.nextVideo) {
+			this.retireVideo(this.nextVideo);
+			this.nextVideo = null;
+		}
+
 		if (this.video) {
-			this.video.pause();
-			this.video.removeAttribute("src");
-			this.video.load(); // release the decoded resource
-			this.video.remove();
+			this.retireVideo(this.video);
 			this.video = null;
 		}
 
@@ -220,13 +243,14 @@ export class DottedGridElement extends HTMLElement {
 		if (oldValue === newValue) return;
 		if (!this.gl) return; // not yet connected
 
+		// `src` drives the (gapless) swap; it reads `src-webm` fresh, so a host that
+		// updates both sets src-webm first, then src. A lone src-webm change with an
+		// unchanged src is a no-op (nothing to reload).
 		if (name === "src" && this.video) {
-			this.textureReady = false;
-			this.video.src = this.resolveSrc();
-			this.video.load();
-			this.applyPlaybackState();
+			this.swapSource();
 			return;
 		}
+		if (name === "src-webm") return;
 		if (name === "paused") {
 			this.applyPlaybackState();
 			return;
@@ -267,19 +291,52 @@ export class DottedGridElement extends HTMLElement {
 		video.loop = !this.hasAttribute("no-loop");
 		video.playsInline = true;
 		video.autoplay = true;
-		video.preload = "auto";
+		// Drop to metadata under Save-Data / a slow link: the visitor has asked us
+		// not to eagerly pull whole video files. The first frame still uploads.
+		video.preload = this.saveData() ? "metadata" : "auto";
 		video.crossOrigin = "anonymous";
-		video.src = this.resolveSrc();
+		this.setVideoSources(video);
+		this.bindVideoListeners(video);
+		return video;
+	}
 
+	/**
+	 * Point a <video> at the current sources. With `src-webm`, feed an ordered
+	 * <source> list (webm first, then mp4) so the browser picks the best it can
+	 * play; otherwise set `video.src` directly (hero single-source usage). Always
+	 * ends with load() so the element (re)starts fetching.
+	 */
+	private setVideoSources(video: HTMLVideoElement) {
+		const webm = this.getAttribute("src-webm");
+		const mp4 = this.resolveSrc();
+		if (webm) {
+			video.removeAttribute("src");
+			video.replaceChildren();
+			for (const [url, type] of [
+				[webm, "video/webm"],
+				[mp4, "video/mp4"],
+			] as const) {
+				if (!url) continue;
+				const source = document.createElement("source");
+				source.src = url;
+				source.type = type;
+				video.appendChild(source);
+			}
+		} else {
+			video.replaceChildren();
+			video.src = mp4;
+		}
+		video.load();
+	}
+
+	/** Wire the readiness + `ended` listeners for a video, tracking teardown so a
+	 * retired buffer can be cleaned without touching the element-lifetime array. */
+	private bindVideoListeners(video: HTMLVideoElement) {
 		// First decodable frame -> upload a texture even while paused (needed for
 		// the reduced-motion static render and to avoid a blank first paint).
 		const onData = () => this.scheduleRender();
 		video.addEventListener("loadeddata", onData);
 		video.addEventListener("seeked", onData);
-		this.listeners.push(() => {
-			video.removeEventListener("loadeddata", onData);
-			video.removeEventListener("seeked", onData);
-		});
 
 		// With `no-loop`, the video fires `ended` once it reaches its final frame.
 		// Re-broadcast it as a bubbling event so a host carousel can advance. (When
@@ -289,8 +346,87 @@ export class DottedGridElement extends HTMLElement {
 				new CustomEvent("dotted-grid:ended", { bubbles: true })
 			);
 		video.addEventListener("ended", onEnded);
-		this.listeners.push(() => video.removeEventListener("ended", onEnded));
-		return video;
+
+		this.videoCleanups.set(video, () => {
+			video.removeEventListener("loadeddata", onData);
+			video.removeEventListener("seeked", onData);
+			video.removeEventListener("ended", onEnded);
+		});
+	}
+
+	/** Fully retire a buffer: cancel listeners, stop decode, release the resource. */
+	private retireVideo(video: HTMLVideoElement) {
+		this.videoCleanups.get(video)?.();
+		this.videoCleanups.delete(video);
+		video.pause();
+		video.removeAttribute("src");
+		video.replaceChildren();
+		video.load(); // release the decoded resource
+		video.remove();
+	}
+
+	/**
+	 * Gapless clip swap. Decode the incoming clip into an off-screen second buffer
+	 * while the current one keeps rendering; flip the active pointer only once the
+	 * newcomer has a frame ready (`loadeddata`), then retire the old buffer. Avoids
+	 * the black dip of resetting the live video's src mid-render.
+	 */
+	private swapSource() {
+		const current = this.video;
+		if (!current) return;
+
+		// Cancel any earlier in-flight swap (rapid scrubbing): retire its buffer.
+		if (this.pendingSwapCleanup) {
+			this.pendingSwapCleanup();
+			this.pendingSwapCleanup = null;
+		}
+		if (this.nextVideo) {
+			this.retireVideo(this.nextVideo);
+			this.nextVideo = null;
+		}
+
+		const next = this.createVideo();
+		this.nextVideo = next;
+		this.appendChild(next);
+
+		const promote = () => {
+			if (this.nextVideo !== next) return; // superseded by a later swap
+			next.removeEventListener("loadeddata", promote);
+			next.removeEventListener("canplay", promote);
+			this.pendingSwapCleanup = null;
+			this.nextVideo = null;
+
+			// Stop the loop before flipping: startLoop()'s rVFC tick captures the
+			// video it was started on, so it must be torn down and restarted against
+			// the new buffer (applyPlaybackState → startLoop rebinds it).
+			this.stopLoop();
+			this.video = next;
+			this.textureReady = false; // force a re-upload from the new buffer
+			if (current) this.retireVideo(current);
+			this.applyPlaybackState();
+		};
+
+		next.addEventListener("loadeddata", promote);
+		next.addEventListener("canplay", promote); // belt-and-suspenders
+		this.pendingSwapCleanup = () => {
+			next.removeEventListener("loadeddata", promote);
+			next.removeEventListener("canplay", promote);
+			this.retireVideo(next);
+		};
+
+		// Start the incoming buffer decoding immediately (muted, off-screen).
+		next.play().catch(() => {
+			/* autoplay may be blocked; promote still fires on loadeddata */
+		});
+	}
+
+	/** True when the visitor has opted into reduced data usage (Save-Data header
+	 * or the browser's data-saver toggle). Used to soften preload. */
+	private saveData(): boolean {
+		const conn = (
+			navigator as Navigator & { connection?: { saveData?: boolean } }
+		).connection;
+		return conn?.saveData === true;
 	}
 
 	private initGL(): boolean {

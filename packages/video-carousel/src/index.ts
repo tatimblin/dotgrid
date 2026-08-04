@@ -54,7 +54,8 @@ function smoothstep(t: number): number {
 }
 
 interface Clip {
-	src: string;
+	src: string; // H.264 mp4 (universal fallback)
+	srcWebm: string; // optional AV1/VP9 webm, preferred where playable ("" = none)
 	desc: string;
 	loc: string;
 	date: string;
@@ -118,6 +119,10 @@ export class VideoCarouselElement extends HTMLElement {
 	private muted = false; // reflects the persisted `sound` preference
 	private lastTickAt = 0; // timestamp of the last emitted tick (ms), for throttling
 
+	// Prefetch of the next clip so the grid's incoming buffer reads from cache.
+	private prefetchLink: HTMLLinkElement | null = null; // reused <link rel=prefetch>
+	private prefersWebm: boolean | null = null; // cached canPlayType('video/webm')
+
 	// Orientation: vertical (desktop, ruler beside the video) or horizontal
 	// (mobile, ruler as a strip below the card). The single source of truth for
 	// all axis-dependent geometry — recomputed on connect and on the media query.
@@ -149,6 +154,7 @@ export class VideoCarouselElement extends HTMLElement {
 		);
 		this.clips = majorTicks.map((t) => ({
 			src: t.dataset.src ?? "",
+			srcWebm: t.dataset.srcWebm ?? "",
 			desc: t.dataset.desc ?? "",
 			loc: t.dataset.loc ?? "",
 			date: t.dataset.date ?? "",
@@ -545,6 +551,11 @@ export class VideoCarouselElement extends HTMLElement {
 		if (this.grid) {
 			if (this.grid.getAttribute("src") !== clip.src) {
 				this.crossfade();
+				// Set src-webm first so it's present when the grid reacts to `src`;
+				// setAttribute fires attributeChangedCallback per attr, and the src
+				// change is what triggers the (single) source swap.
+				if (clip.srcWebm) this.grid.setAttribute("src-webm", clip.srcWebm);
+				else this.grid.removeAttribute("src-webm");
 				this.grid.setAttribute("src", clip.src);
 			} else if (!initial) {
 				// Same file as the outgoing clip (e.g. adjacent clips reuse a src, or
@@ -552,6 +563,9 @@ export class VideoCarouselElement extends HTMLElement {
 				// and with `no-loop` the video is parked on its final frame. Restart it.
 				(this.grid as { replay?: () => void }).replay?.();
 			}
+			// Warm the following clip regardless of whether THIS one reloaded (covers
+			// the initial select, where clip[0] is already the grid's src).
+			this.prefetchNext(index);
 		}
 
 		if (this.descEl) this.descEl.textContent = clip.desc;
@@ -566,6 +580,49 @@ export class VideoCarouselElement extends HTMLElement {
 		// Let layout settle on the first paint before measuring the ruler height.
 		if (initial) requestAnimationFrame(() => this.scrollToClip(index, false));
 		else this.scrollToClip(index, true);
+	}
+
+	/**
+	 * Warm the browser cache with the clip that follows `index` so the grid's
+	 * double-buffer decode reads from cache instead of the network at swap time.
+	 * Uses a single reused `<link rel="prefetch" as="video">`, picking the webm URL
+	 * where the browser can play it. Skipped under Save-Data — the visitor has asked
+	 * us not to pull bytes speculatively.
+	 */
+	private prefetchNext(index: number) {
+		const n = this.clips.length;
+		if (n < 2) return;
+		if (this.saveData()) return;
+
+		const next = this.clips[(index + 1) % n];
+		if (this.prefersWebm === null) {
+			const probe = document.createElement("video");
+			this.prefersWebm = probe.canPlayType("video/webm") !== "";
+		}
+		const url = this.prefersWebm && next.srcWebm ? next.srcWebm : next.src;
+		if (!url) return;
+
+		if (!this.prefetchLink) {
+			const link = document.createElement("link");
+			link.rel = "prefetch";
+			link.as = "video";
+			document.head.appendChild(link);
+			this.prefetchLink = link;
+			this.listeners.push(() => {
+				link.remove();
+				this.prefetchLink = null;
+			});
+		}
+		if (this.prefetchLink.getAttribute("href") !== url)
+			this.prefetchLink.setAttribute("href", url);
+	}
+
+	/** True when the visitor has opted into reduced data usage. */
+	private saveData(): boolean {
+		const conn = (
+			navigator as Navigator & { connection?: { saveData?: boolean } }
+		).connection;
+		return conn?.saveData === true;
 	}
 
 	/** Scroll the strip so clip `i`'s date sits at the fixed center marker. */
