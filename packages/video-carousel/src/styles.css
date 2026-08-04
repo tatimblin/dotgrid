@@ -32,8 +32,10 @@ video-carousel {
 	width: 100%;
 }
 
-/* The card: portrait video + caption stacked, bordered/clipped. Width capped so
-   the 9:16 video can't exceed the height cap; height grows to video + caption. */
+/* The stage: portrait video + caption stacked, unframed and blended into the
+   page. Square corners, no border; background matches the page so the halftone
+   sits directly on it. Width capped so the 9:16 video can't exceed the height
+   cap; height grows to video + caption. */
 .vc__stage {
 	position: relative;
 	flex: 1 1 auto;
@@ -41,10 +43,9 @@ video-carousel {
 	max-width: var(--vc-card-w);
 	display: flex;
 	flex-direction: column;
-	border: 1px solid var(--color-border, var(--color-accent, #0a84ff));
-	border-radius: var(--radius, 12px);
+	border-radius: 0;
 	overflow: hidden;
-	background: var(--card-background, #050608);
+	background: var(--color-bg, #fff);
 	transition: opacity 0.26s ease;
 }
 
@@ -59,14 +60,14 @@ video-carousel {
 	aspect-ratio: 960 / 1706;
 }
 
-/* Caption bar inside the card, beneath the video: white panel, dark text. */
+/* Caption bar beneath the video: white panel, dark text. */
 .vc__caption {
 	display: flex;
 	flex-wrap: wrap;
 	justify-content: space-between;
 	gap: var(--space-2, 0.5rem);
 	padding: var(--space-2, 0.5rem) var(--space-3, 0.75rem);
-	font-size: var(--font-size-1, 0.8125rem);
+	font-size: 0.75rem;
 	letter-spacing: 0.04em;
 	text-transform: uppercase;
 	color: #111;
