@@ -10,7 +10,18 @@ const DEFAULTS = {
 	colorReveal: 80, // pointer trail radius (CSS px) when `color-reveal` is empty
 	shimmer: 8, // percent of dots that flash when `shimmer` is empty
 	revealBoost: 0.3, // vividness of revealed color: 0 = raw sample, 1 = "ascii" pop
+	// --- CRT "display" look (ported from the science-lab dot-matrix shader) ---
+	dotShape: 2, // 0 = square (legacy), 1 = circle, 2 = morph circle->rounded-square
+	bloom: 0.55, // 0..1 glow + phosphor rim on the brightest dots; 0 => off
+	scanlines: 0.12, // 0..1 CRT horizontal scanline darkening; 0 => off
+	vignette: 0.4, // 0..1 edge darkening; 0 => off
+	crosshatch: 0.35, // 0..1 cross-hatch shading strength in the darkest cells; 0 => off
 } as const;
+
+// Map the `dot-shape` attribute string to its shader enum. Numbers pass through
+// (so the playground can drive it with a 0/1/2 range); unknown values fall back
+// to the default morph.
+const DOT_SHAPES: Record<string, number> = { square: 0, circle: 1, morph: 2 };
 
 const MAX_DPR = 2; // clamp devicePixelRatio so 4K/retina stays affordable
 const MAX_TRAIL = 32; // pointer samples kept for the color-reveal trail
@@ -50,6 +61,16 @@ const TRAIL_MS = 600; // trail lifetime — longer than fade-in so dots trail ou
  *   no-loop       boolean; plays the video once instead of looping. On the final
  *                 frame it dispatches a bubbling `dotted-grid:ended` CustomEvent so
  *                 a host (e.g. a carousel) can advance. Absent => loops (default).
+ *   dot-shape     dot silhouette: `square` (legacy per-axis box), `circle`, or
+ *                 `morph` (default) — small/dim dots read as circles, the brightest
+ *                 morph to rounded squares, echoing a phosphor dot-matrix display.
+ *                 A numeric 0/1/2 works too (for the live playground slider).
+ *   bloom         0..1; glow halo + phosphor rim on the brightest dots (default
+ *                 0.55). 0 disables it and falls back to the subtle highlight-lift.
+ *   scanlines     0..1; CRT horizontal scanline darkening (default 0.12). 0 => off.
+ *   vignette      0..1; edge darkening toward the frame corners (default 0.4). 0 => off.
+ *   crosshatch    0..1; cross-hatch engraving marks in the darkest cells, denser as
+ *                 brightness falls (default 0.35). 0 => off.
  *
  * The color reveal (trail + shimmer) is disabled while paused or under
  * prefers-reduced-motion, matching the animation gating.
@@ -78,6 +99,11 @@ export class DottedGridElement extends HTMLElement {
 			"shimmer",
 			"reveal-boost",
 			"no-loop",
+			"dot-shape",
+			"bloom",
+			"scanlines",
+			"vignette",
+			"crosshatch",
 		];
 	}
 
@@ -461,6 +487,13 @@ export class DottedGridElement extends HTMLElement {
 		uniform vec3 uColor;        // dot color
 		uniform vec3 uBg;           // backdrop color
 
+		// CRT "display" look. Each is off at 0 so a uniform branch skips its cost.
+		uniform float uShape;       // 0 square, 1 circle, 2 morph circle->rounded-square
+		uniform float uBloom;       // 0..1 glow + phosphor rim on bright dots
+		uniform float uScanlines;   // 0..1 horizontal scanline darkening
+		uniform float uVignette;    // 0..1 edge darkening
+		uniform float uCrosshatch;  // 0..1 cross-hatch marks in the darkest cells
+
 		// Color reveal: dots within the trail radius or caught by the shimmer show
 		// their true sampled color instead of the flat uColor.
 		uniform vec2 uTrail[MAX_TRAIL]; // recent pointer positions, device px
@@ -551,30 +584,88 @@ export class DottedGridElement extends HTMLElement {
 				amount = step;
 			}
 
-			// Axis-aligned square dot, centered in the cell. We build it as a
-			// per-axis box (product of two independent 1D edges) rather than a
-			// Chebyshev max() distance: the derivative of max() is discontinuous
-			// along the cell diagonals, so fwidth()-based AA spikes there and the
-			// corners read as stray triangles/arrows. Two smooth axis edges have
-			// no such spike, giving clean corners and a constant ~1px feather.
+			// Dot silhouette. Three shapes share the same half-width (device px);
+			// only the edge test differs.
 			float halfCell = uCell * 0.5;
-			vec2 d = abs(px - cellCenterPx);              // device px from center
-			float halfW = amount * uDotScale * halfCell;  // square half-width, device px
-			vec2 aa = fwidth(d);                          // ~1px per axis
-			vec2 edge = 1.0 - smoothstep(halfW - aa, halfW + aa, d);
-			// halfW == 0 (empty level) must stay fully dark, not a half-lit pixel.
-			float mask = (halfW > 0.0) ? edge.x * edge.y : 0.0;
+			vec2 dvec = px - cellCenterPx;                // signed offset from center
+			vec2 absD = abs(dvec);                        // device px from center
+			float halfW = amount * uDotScale * halfCell;  // dot half-width, device px
+			float circleDist = length(dvec);
+			const float AA = 1.0;                         // fixed ~1px feather (device px)
+
+			// sd is a signed distance (px, <0 inside) used by the bloom halo and
+			// phosphor rim regardless of the drawn shape.
+			float mask;
+			float sd;
+			if (uShape < 0.5) {
+				// Legacy square: per-axis box (product of two 1D edges) with fwidth AA.
+				// A Chebyshev max() distance is discontinuous along the cell diagonals,
+				// so fwidth()-based AA spikes there and corners read as stray triangles;
+				// two smooth axis edges avoid that. (The bloom/rim sd below may use the
+				// box SDF safely because it feathers with a fixed AA, not fwidth.)
+				vec2 aa = fwidth(absD);
+				vec2 edge = 1.0 - smoothstep(halfW - aa, halfW + aa, absD);
+				mask = (halfW > 0.0) ? edge.x * edge.y : 0.0;
+				sd = max(absD.x, absD.y) - halfW;
+			} else if (uShape < 1.5) {
+				// Circle.
+				sd = circleDist - halfW;
+				mask = (halfW > 0.0) ? 1.0 - smoothstep(-AA, AA, sd) : 0.0;
+			} else {
+				// Morph: dim/small dots read as circles, bright dots pull toward a
+				// rounded square (corner radius shrinks as brightness rises).
+				float cornerR = min(halfW, mix(halfW * 0.9, halfW * 0.25, smoothstep(0.15, 0.7, amount)));
+				vec2 qd = absD - vec2(halfW - cornerR);
+				float sdRound = length(max(qd, 0.0)) + min(max(qd.x, qd.y), 0.0) - cornerR;
+				float sq = smoothstep(0.15, 0.7, amount);
+				sd = mix(circleDist - halfW, sdRound, sq);
+				mask = (halfW > 0.0) ? 1.0 - smoothstep(-AA, AA, sd) : 0.0;
+			}
+
+			// Bloom halo + phosphor rim on the brightest dots (branch-gated: 0 cost
+			// when uBloom == 0 or the cell is dim). The halo is a soft ring just
+			// OUTSIDE the dot edge; the rim is a bright lip just INSIDE it — together
+			// they read as glowing phosphor rather than a flat, larger dot.
+			float glow = 0.0;
+			float rim = 0.0;
+			if (uBloom > 0.0 && amount > 0.5 && halfW > 0.0) {
+				float bright = smoothstep(0.5, 1.0, amount);
+				float haloW = max(2.0, halfW * 0.9);
+				glow = (sd > 0.0) ? (1.0 - smoothstep(0.0, haloW, sd)) * bright * uBloom * 0.5 : 0.0;
+				float rimPx = max(1.0, halfW * 0.3);
+				float inner = 1.0 - smoothstep(-AA, AA, sd + rimPx);
+				rim = max(mask - inner, 0.0) * bright * uBloom;
+			}
+
+			// Cross-hatch engraving in the darkest cells: a rotated dot-lattice whose
+			// marks grow denser as brightness falls (branch-gated to shadow cells).
+			float hatch = 0.0;
+			if (uCrosshatch > 0.0 && amount < 0.4) {
+				float shadow = smoothstep(0.4, 0.0, amount); // 1 in the darkest cells
+				float spacing = uCell * 0.7;
+				float ca = cos(0.4363), sa = sin(0.4363);   // ~25deg
+				vec2 rp = vec2(ca * px.x - sa * px.y, sa * px.x + ca * px.y);
+				vec2 hcell = floor(rp / spacing);
+				vec2 hcenter = (hcell + 0.5) * spacing;
+				float hd = length(rp - hcenter);
+				float hr = mix(0.4, spacing * 0.18, shadow);
+				hatch = (1.0 - smoothstep(hr - 0.6, hr + 0.6, hd)) * shadow * uCrosshatch;
+			}
 
 			// --- color reveal: how much of the true video color to show here -----
 			// Pointer trail: strongest near a recent sample, decaying with distance
 			// (radial falloff) and sample age (1 - age). Newest sample => full color
 			// (fast fade-in); older samples decay over TRAIL_MS (slow fade-out).
+			// Skip the whole scan when the trail is empty (the common case — the hero
+			// has no color-reveal), so those fragments don't spin the MAX_TRAIL loop.
 			float trail = 0.0;
-			for (int i = 0; i < MAX_TRAIL; i++) {
-				if (i >= uTrailCount) break;
-				float d = distance(cellCenterPx, uTrail[i]);
-				float falloff = 1.0 - smoothstep(0.0, uRevealRadius, d);
-				trail = max(trail, falloff * (1.0 - uTrailAge[i]));
+			if (uTrailCount > 0) {
+				for (int i = 0; i < MAX_TRAIL; i++) {
+					if (i >= uTrailCount) break;
+					float d = distance(cellCenterPx, uTrail[i]);
+					float falloff = 1.0 - smoothstep(0.0, uRevealRadius, d);
+					trail = max(trail, falloff * (1.0 - uTrailAge[i]));
+				}
 			}
 
 			// Shimmer: a fraction (uShimmer) of cells, chosen by hash, flash to color
@@ -610,10 +701,33 @@ export class DottedGridElement extends HTMLElement {
 			// of being washed toward the pole. Pole derived from uBg => theme-safe
 			// (both consumers hardcode uColor; only the bg flips with theme).
 			vec3 hiPole = mix(vec3(1.0), vec3(0.0), step(0.5, luma(uBg)));
-			float hiLift = smoothstep(HI_THRESHOLD, 1.0, amount) * HI_STRENGTH * (1.0 - colorRestore);
+			// When bloom drives the highlight glow, fold back the standing highlight-lift
+			// so the two don't double-count (bloom is the stronger, explicit version).
+			float hiLift = smoothstep(HI_THRESHOLD, 1.0, amount) * HI_STRENGTH
+				* (1.0 - colorRestore) * (1.0 - clamp(uBloom, 0.0, 1.0));
 			dot = mix(dot, hiPole, hiLift);
 
-			fragColor = vec4(mix(uBg, dot, mask), 1.0);
+			// Compose: start from the backdrop, engrave the shadow hatch, add the bloom
+			// halo, paint the dot, then lift its phosphor rim toward the glow pole.
+			vec3 result = uBg;
+			result = mix(result, mix(uColor, hiPole, 0.3), hatch);
+			result += hiPole * glow;
+			result = mix(result, dot, mask);
+			result += hiPole * rim * 0.6;
+
+			// CRT scanlines: darken alternating device-pixel rows. Branch-gated.
+			if (uScanlines > 0.0) {
+				float scan = 0.5 + 0.5 * sin(vUv.y * uResolution.y * 3.14159265);
+				result *= 1.0 - uScanlines * (1.0 - scan);
+			}
+			// Vignette: darken toward the frame corners. Branch-gated.
+			if (uVignette > 0.0) {
+				vec2 vg = vUv * (1.0 - vUv);
+				float v = pow(clamp(vg.x * vg.y * 16.0, 0.0, 1.0), uVignette * 0.6);
+				result *= mix(1.0, v, uVignette);
+			}
+
+			fragColor = vec4(result, 1.0);
 		}`;
 
 		const program = this.buildProgram(vs, fs);
@@ -658,6 +772,11 @@ export class DottedGridElement extends HTMLElement {
 			"uTime",
 			"uShimmer",
 			"uRevealBoost",
+			"uShape",
+			"uBloom",
+			"uScanlines",
+			"uVignette",
+			"uCrosshatch",
 		];
 		for (const n of names) this.uniforms[n] = gl.getUniformLocation(program, n);
 		return true;
@@ -850,6 +969,11 @@ export class DottedGridElement extends HTMLElement {
 		gl.uniform1f(this.uniforms.uContrast, this.num("contrast", DEFAULTS.contrast));
 		gl.uniform3f(this.uniforms.uColor, r, g, b);
 		gl.uniform3f(this.uniforms.uBg, br, bg, bb);
+		gl.uniform1f(this.uniforms.uShape, this.shape());
+		gl.uniform1f(this.uniforms.uBloom, this.numZero("bloom", DEFAULTS.bloom));
+		gl.uniform1f(this.uniforms.uScanlines, this.numZero("scanlines", DEFAULTS.scanlines));
+		gl.uniform1f(this.uniforms.uVignette, this.numZero("vignette", DEFAULTS.vignette));
+		gl.uniform1f(this.uniforms.uCrosshatch, this.numZero("crosshatch", DEFAULTS.crosshatch));
 		this.uploadReveal(gl, dpr);
 
 		gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
@@ -918,6 +1042,17 @@ export class DottedGridElement extends HTMLElement {
 
 	private resolveSrc(): string {
 		return this.getAttribute("src") || "";
+	}
+
+	/** Resolve `dot-shape` to its shader enum (0 square / 1 circle / 2 morph).
+	 * Accepts the named strings or a raw 0/1/2 (the playground slider). */
+	private shape(): number {
+		const raw = this.getAttribute("dot-shape");
+		if (raw === null) return DEFAULTS.dotShape;
+		const named = DOT_SHAPES[raw.trim().toLowerCase()];
+		if (named !== undefined) return named;
+		const n = Number.parseFloat(raw);
+		return Number.isFinite(n) ? Math.min(2, Math.max(0, Math.round(n))) : DEFAULTS.dotShape;
 	}
 
 	private num(attr: string, fallback: number): number {
