@@ -172,8 +172,16 @@ export class VideoCarouselElement extends HTMLElement {
 		);
 
 		// Orientation drives all axis-dependent geometry; set it before building.
-		this.orientationMQ = window.matchMedia("(max-width: 640px)");
-		this.orientation = this.orientationMQ.matches ? "horizontal" : "vertical";
+		// `orientation="vertical|horizontal"` PINS the axis (e.g. the full-bleed hero
+		// wants a vertical ruler even on a narrow screen), bypassing the media-query
+		// flip. Absent → responsive: vertical on desktop, horizontal ≤640px.
+		const locked = this.getAttribute("orientation");
+		if (locked === "vertical" || locked === "horizontal") {
+			this.orientation = locked;
+		} else {
+			this.orientationMQ = window.matchMedia("(max-width: 640px)");
+			this.orientation = this.orientationMQ.matches ? "horizontal" : "vertical";
+		}
 
 		this.buildRuler();
 
@@ -188,17 +196,20 @@ export class VideoCarouselElement extends HTMLElement {
 		// tick positions (left vs top) + the modifier class; the pointer/keyboard
 		// listeners bind to the ruler itself (they survive replaceChildren), so we
 		// do NOT re-attach them. scrollToClip re-seats the offset for the new axis.
-		const onOrientationChange = () => {
-			const next = this.orientationMQ?.matches ? "horizontal" : "vertical";
-			if (next === this.orientation) return;
-			this.orientation = next;
-			this.buildRuler();
-			this.scrollToClip(this.current, false);
-		};
-		this.orientationMQ.addEventListener("change", onOrientationChange);
-		this.listeners.push(() =>
-			this.orientationMQ?.removeEventListener("change", onOrientationChange)
-		);
+		// Skipped when orientation is pinned (orientationMQ stays null).
+		if (this.orientationMQ) {
+			const onOrientationChange = () => {
+				const next = this.orientationMQ?.matches ? "horizontal" : "vertical";
+				if (next === this.orientation) return;
+				this.orientation = next;
+				this.buildRuler();
+				this.scrollToClip(this.current, false);
+			};
+			this.orientationMQ.addEventListener("change", onOrientationChange);
+			this.listeners.push(() =>
+				this.orientationMQ?.removeEventListener("change", onOrientationChange)
+			);
+		}
 
 		// Tick sound: preload the asset (if authored) and track the global mute
 		// preference. Mirrors the theme toggle wiring — the footer flips
