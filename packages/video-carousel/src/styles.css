@@ -12,14 +12,40 @@ video-carousel {
 	   ratio so the video stays 9:16 and never gets absurdly tall. */
 	--vc-cap: min(72vh, 34rem);
 	--vc-card-w: calc(var(--vc-cap) * 960 / 1706);
-	/* Total ruler width (date-label gutter + longest tick + end pad). Hoisted to
-	   the host so a consumer can reserve the same amount of gutter space when the
-	   ruler sits OUTSIDE a bounded layout (e.g. `ruler-side="right"` protruding
-	   past a grid column). The .vc__ruler component vars below feed this. */
+	/* RULER GEOMETRY KNOBS. Declared on the HOST, not on .vc__ruler, because the
+	   --vc-ruler-w/-h totals below are also computed here: custom properties inherit
+	   downward only, so a knob declared on the descendant would be invisible to a calc
+	   on the host and the total would silently resolve against its own fallback. Host
+	   is also the right override point for a consumer (one place, before the internals
+	   read it). .vc__ruler and its children consume these by inheritance. */
+	--vc-max-tick: 32px; /* longest (year) tick — vertical ruler width driver */
+	--vc-max-tick-h: 24px; /* horizontal strip: tick growth extent (mobile) */
+	--vc-date-gutter: 4.5rem;
+	--vc-end-pad: var(--space-2, 0.5rem);
+	/* Total ruler width (date-label gutter + longest tick + end pad). Hoisted so a
+	   consumer can reserve the same amount of gutter space when the ruler sits OUTSIDE
+	   a bounded layout (e.g. `ruler-side="right"` protruding past a grid column). */
 	--vc-ruler-w: calc(
-		var(--vc-date-gutter, 4.5rem) + var(--vc-max-tick, 32px) +
-			var(--vc-end-pad, var(--space-2, 0.5rem))
+		var(--vc-date-gutter) + var(--vc-max-tick) + var(--vc-end-pad)
 	);
+	/* Total height of the HORIZONTAL ruler strip: the tick growth extent, plus the gap
+	   below a tick, plus the year-label row beneath it. Hoisted for the same reason as
+	   --vc-ruler-w — a consumer that overlays the ruler on a scene needs to reserve this
+	   much room above it, and should never restate the number.
+	   Composed from the REAL parts (rather than the old "+ 1.1rem" allowance, which was
+	   ~5px short of the label's line box and let `overflow: hidden` shave the year
+	   digits): --vc-tick-year-gap is the label's `top` offset past the tick and
+	   --vc-tick-year-h its line box at 0.7rem/normal. */
+	--vc-tick-year-gap: var(--space-1, 0.25rem);
+	--vc-tick-year-h: 1.1rem;
+	--vc-ruler-h: calc(
+		var(--vc-max-tick-h) + var(--vc-tick-year-gap) + var(--vc-tick-year-h)
+	);
+	/* How much of the host's bottom edge the overlay UI (ruler ∪ caption) occupies.
+	   JS republishes the MEASURED value (see publishMetrics); this CSS default is the
+	   pre-JS/first-paint value, derived from the ruler geometry so it is never a
+	   magic number. Only meaningful when a consumer bottom-anchors that UI. */
+	--vc-bottom-ui-extent: var(--vc-ruler-h);
 }
 
 /* Ruler + card share a row; align-items:stretch makes the ruler track the card
@@ -91,11 +117,8 @@ video-carousel {
 .vc__ruler {
 	position: relative;
 	/* Fixed width so tick magnification never reflows the layout. Width =
-	   date-label gutter + longest (year) tick + end pad. */
-	--vc-max-tick: 32px;
-	--vc-max-tick-h: 24px; /* horizontal strip: tick growth extent (mobile) */
-	--vc-date-gutter: 4.5rem;
-	--vc-end-pad: var(--space-2, 0.5rem);
+	   date-label gutter + longest (year) tick + end pad — see --vc-ruler-w on the host,
+	   where the geometry knobs live (they must be readable by the host's own calcs). */
 	flex: 0 0 auto;
 	width: var(--vc-ruler-w);
 	align-self: stretch;
@@ -232,8 +255,15 @@ video-carousel {
    their tick, and the marker is a vertical bar at the horizontal center. */
 .vc__ruler--horizontal {
 	width: 100%;
-	/* Room for the tick growth extent + the year-label row below. */
-	height: calc(var(--vc-max-tick-h) + 1.1rem);
+	/* Room for the tick growth extent + the year-label row below (--vc-ruler-h, on the
+	   host, so a consumer can reserve exactly this much space above the strip).
+	   box-sizing is border-box (global reset) and the strip/ticks are absolutely
+	   positioned against the padding box — whose top edge coincides with the border
+	   box's — so padding-block here does NOT push them down or add room, it only eats
+	   into this height and clips the year labels against `overflow: hidden`. A consumer
+	   wanting the strip inset from an edge should offset the RULER (e.g. `bottom`) or
+	   raise --vc-max-tick-h, not pad it. */
+	height: var(--vc-ruler-h);
 	align-self: auto;
 	cursor: ew-resize;
 	order: 2; /* below the card (ruler is first in DOM order) */
@@ -262,7 +292,13 @@ video-carousel {
 .vc__ruler--horizontal .vc__tick-year {
 	right: auto;
 	left: 50%;
-	top: calc(100% + var(--space-1, 0.25rem));
+	/* Anchored to the tick strip's FULL growth extent, not to `100%` of this tick: a
+	   tick's height is magnified from JS, so `100%` would push the label further down
+	   the nearer it is to the marker — past the room --vc-ruler-h reserves, where
+	   `overflow: hidden` clips it. A fixed offset also keeps the label row level
+	   across ticks instead of bobbing with the magnification. */
+	top: calc(var(--vc-max-tick-h) + var(--vc-tick-year-gap));
+	line-height: var(--vc-tick-year-h);
 	transform: translateX(-50%);
 }
 

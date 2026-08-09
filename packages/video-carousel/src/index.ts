@@ -91,9 +91,17 @@ export class VideoCarouselElement extends HTMLElement {
 	private ruler: HTMLElement | null = null;
 	private descEl: HTMLElement | null = null;
 	private locEl: HTMLElement | null = null;
+	private caption: HTMLElement | null = null;
 	private stage: HTMLElement | null = null;
 	private strip: HTMLElement | null = null;
 	private marker: HTMLElement | null = null;
+
+	/** Last published metrics, so a re-measure that changes nothing writes nothing
+	    (a custom-property write from inside a ResizeObserver callback that in turn
+	    resizes anything triggers "ResizeObserver loop completed with undelivered
+	    notifications"). */
+	private lastRulerExtent = -1;
+	private lastBottomExtent = -1;
 
 	private clips: Clip[] = [];
 	private clipTimes: number[] = []; // continuous time per clip, in years
@@ -147,6 +155,7 @@ export class VideoCarouselElement extends HTMLElement {
 		this.stage = this.querySelector<HTMLElement>("[data-vc-stage]");
 		this.descEl = this.querySelector<HTMLElement>("[data-vc-desc]");
 		this.locEl = this.querySelector<HTMLElement>("[data-vc-loc]");
+		this.caption = this.querySelector<HTMLElement>(".vc__caption");
 		if (!this.grid || !this.ruler) return;
 
 		const majorTicks = Array.from(
@@ -238,8 +247,14 @@ export class VideoCarouselElement extends HTMLElement {
 		this.attachRulerInteraction();
 
 		// Center depends on the ruler's height, so re-center + re-magnify on resize.
-		this.resizeObserver = new ResizeObserver(() => this.scrollToClip(this.current, false));
+		// refresh() (via scrollToClip) also republishes the bottom-UI extent on its
+		// coalesced frame — the caption is observed too, since its wrap count changes
+		// the reserve a consumer must leave above it.
+		this.resizeObserver = new ResizeObserver(() =>
+			this.scrollToClip(this.current, false)
+		);
 		this.resizeObserver.observe(this.ruler);
+		if (this.caption) this.resizeObserver.observe(this.caption);
 
 		this.select(0, { initial: true });
 	}
@@ -260,6 +275,9 @@ export class VideoCarouselElement extends HTMLElement {
 		this.strip = null;
 		this.marker = null;
 		this.orientationMQ = null;
+		this.caption = null;
+		this.lastRulerExtent = -1;
+		this.lastBottomExtent = -1;
 	}
 
 	// --- ruler construction ------------------------------------------------
@@ -663,6 +681,63 @@ export class VideoCarouselElement extends HTMLElement {
 		this.refresh();
 	}
 
+	/**
+	 * Publish how much of the host's BOTTOM edge this carousel's own overlay UI
+	 * occupies, so a consumer that stacks content above it can reserve exactly that
+	 * much room instead of hardcoding a guess.
+	 *
+	 * Two properties, both measured (never derived from a breakpoint):
+	 *   --vc-ruler-extent      host bottom → ruler top. The ruler alone.
+	 *   --vc-bottom-ui-extent  host bottom → the HIGHEST of (ruler top, caption top).
+	 *
+	 * The `min()` over both boxes is the point: whichever protrudes further sets the
+	 * reserve, so a caption that wraps to two lines is accounted for rather than
+	 * assumed away. Both are only meaningful when the consumer has positioned this UI
+	 * as a bottom-anchored overlay (the full-bleed hero); in the default in-flow
+	 * layout the caption sits below the video and the numbers are simply its own box
+	 * heights, which no one reads.
+	 *
+	 * Called from the ResizeObserver (ruler + caption) and after each select(), since
+	 * the caption text — hence its wrap count — changes per clip. Writes are guarded
+	 * on the last published value: an unguarded custom-property write from inside an
+	 * RO callback logs "ResizeObserver loop completed with undelivered notifications".
+	 */
+	private publishMetrics() {
+		const ruler = this.ruler;
+		if (!ruler) return;
+
+		const hostBottom = this.getBoundingClientRect().bottom;
+		const rulerTop = ruler.getBoundingClientRect().top;
+		const rulerExtent = Math.max(0, hostBottom - rulerTop);
+
+		// The caption may be display:none or absent; fall back to the ruler alone.
+		const capRect = this.caption?.getBoundingClientRect();
+		const topMost =
+			capRect && capRect.height > 0 ? Math.min(rulerTop, capRect.top) : rulerTop;
+		const bottomExtent = Math.max(0, hostBottom - topMost);
+
+		if (Math.abs(rulerExtent - this.lastRulerExtent) > 0.5) {
+			this.lastRulerExtent = rulerExtent;
+			this.style.setProperty("--vc-ruler-extent", `${rulerExtent.toFixed(1)}px`);
+		}
+		if (Math.abs(bottomExtent - this.lastBottomExtent) > 0.5) {
+			this.lastBottomExtent = bottomExtent;
+			this.style.setProperty(
+				"--vc-bottom-ui-extent",
+				`${bottomExtent.toFixed(1)}px`
+			);
+			// Custom properties inherit DOWNWARD only, so an ancestor (the hero layout
+			// that needs to reserve this room) cannot read the host's property. Announce
+			// it instead — same bubbling-event idiom as `dotted-grid:ended`.
+			this.dispatchEvent(
+				new CustomEvent("video-carousel:metrics", {
+					bubbles: true,
+					detail: { bottomUiExtent: bottomExtent, rulerExtent },
+				})
+			);
+		}
+	}
+
 	/** Briefly dip the stage opacity around a src swap (skipped for reduced motion). */
 	private crossfade() {
 		if (!this.stage || this.reducedMotion?.matches) return;
@@ -694,6 +769,10 @@ export class VideoCarouselElement extends HTMLElement {
 			strip.style.transform = this.horizontal
 				? `translateX(${this.stripOffset.toFixed(1)}px)`
 				: `translateY(${this.stripOffset.toFixed(1)}px)`;
+
+			// Republish the bottom-UI reserve on the same coalesced frame: the caption's
+			// wrap count changes with the clip, and the ruler's box with the viewport.
+			this.publishMetrics();
 
 			const center = this.mainSize() / 2;
 			for (let i = 0; i < this.tickEls.length; i++) {
