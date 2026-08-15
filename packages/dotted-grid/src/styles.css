@@ -16,6 +16,39 @@ dotted-grid canvas {
 	height: 100%;
 }
 
+/* FIRST-FRAME FADE. Until a frame is decoded and drawn there is nothing in the
+   canvas, and the halftone used to SNAP to full strength the moment one arrived.
+   Fade it up over the host's background plate instead, so the effect resolves out
+   of the page colour rather than appearing from nowhere. The element sets
+   `data-ready` after its first real draw (see announceReady in index.ts).
+
+   Costs nothing measurable: a <canvas> is not a Largest-Contentful-Paint
+   candidate, so this delays no reported metric — and the host keeps painting
+   --dotted-grid-bg throughout, so the box is never empty.
+
+   Longhands, not the `transition` shorthand: a shorthand carrying an unresolved
+   custom property is invalid-at-computed-value and would drop the whole
+   declaration. Fallbacks included because this package is consumed standalone. */
+@media (prefers-reduced-motion: no-preference) {
+	/* :not([intro]) — the two entrances are mutually exclusive. With `intro` the
+	   SHADER does the reveal, developing the picture in brightest-dots-first; a
+	   simultaneous opacity fade would be a cross-dissolve layered on top of a wipe,
+	   which muddies both (the wipe's early highlights would arrive dimmed, so the
+	   ordering that is the whole point of it stops reading). One or the other. */
+	dotted-grid:not([intro]) canvas {
+		opacity: 0;
+		transition-property: opacity;
+		transition-duration: var(--duration-reveal, 900ms);
+		transition-timing-function: var(
+			--ease-reveal,
+			cubic-bezier(0.22, 1, 0.36, 1)
+		);
+	}
+	dotted-grid:not([intro])[data-ready] canvas {
+		opacity: 1;
+	}
+}
+
 dotted-grid video {
 	position: absolute;
 	width: 1px;

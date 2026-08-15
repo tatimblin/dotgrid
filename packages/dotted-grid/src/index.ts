@@ -16,6 +16,12 @@ const DEFAULTS = {
 	scanlines: 0.12, // 0..1 CRT horizontal scanline darkening; 0 => off
 	vignette: 0.4, // 0..1 edge darkening; 0 => off
 	crosshatch: 0.35, // 0..1 cross-hatch shading strength in the darkest cells; 0 => off
+	// --- intro wipe (brightest dots first) ---
+	introMs: 2600, // duration of the develop-in when `intro` is present but empty
+	introDelayMs: 500, // hold the grid empty this long first, so the wipe reads as
+	// a deliberate entrance rather than something already half-finished by the time
+	// the eye lands on it
+	introJitter: 0.16, // grain in the brightness wavefront (0 = a clean contour sweep)
 } as const;
 
 // Map the `dot-shape` attribute string to its shader enum. Numbers pass through
@@ -71,9 +77,26 @@ const TRAIL_MS = 600; // trail lifetime — longer than fade-in so dots trail ou
  *   vignette      0..1; edge darkening toward the frame corners (default 0.4). 0 => off.
  *   crosshatch    0..1; cross-hatch engraving marks in the darkest cells, denser as
  *                 brightness falls (default 0.35). 0 => off.
+ *   intro         boolean-or-ms; develop the picture in ONCE on arrival, brightest
+ *                 dots first. Each cell's dot grows from nothing to its true size as
+ *                 a brightness threshold sweeps from the highlights down into the
+ *                 shadows, so the image resolves out of the backdrop like a print in
+ *                 developer. Absent => off (the image simply appears); empty =>
+ *                 default 2600ms; a number sets the duration.
+ *                 The clock starts at the FIRST DECODED FRAME, so a slow network
+ *                 delays the wipe instead of eating it, and it never replays — a
+ *                 clip swap mid-carousel must not re-develop the frame.
+ *   intro-delay   ms to hold the grid EMPTY before the wipe starts (default 500).
+ *                 Also measured from the first decoded frame, so delay + duration
+ *                 compose into one predictable entrance however long the video took
+ *                 to arrive. 0 => start developing immediately.
+ *   intro-jitter  brightness-units of per-cell noise in that wavefront (default
+ *                 0.16), so the arrival edge breaks into grain instead of sweeping
+ *                 as a visible contour line through flat areas. 0 => a clean sweep.
  *
  * The color reveal (trail + shimmer) is disabled while paused or under
- * prefers-reduced-motion, matching the animation gating.
+ * prefers-reduced-motion, matching the animation gating. So is `intro` — a
+ * develop-in is decorative, so that visitor gets the finished image immediately.
  *
  * Lifecycle mirrors the other packages (gallery-carousel): a `listeners`
  * cleanup array, a `rafId` guard, a `ResizeObserver`, and reduced-motion
@@ -104,6 +127,9 @@ export class DottedGridElement extends HTMLElement {
 			"scanlines",
 			"vignette",
 			"crosshatch",
+			"intro",
+			"intro-delay",
+			"intro-jitter",
 		];
 	}
 
@@ -145,6 +171,19 @@ export class DottedGridElement extends HTMLElement {
 
 	private visible = true; // in viewport (IntersectionObserver)
 	private textureReady = false; // has at least one frame been uploaded
+	/** Whether the "first frame is up" announcement has already been made. Distinct
+	 *  from textureReady, which goes back to false on teardown and on every clip
+	 *  swap — this must fire exactly ONCE per element so the canvas fades in on
+	 *  arrival and never re-fades mid-carousel (the swap has its own crossfade). */
+	private announcedReady = false;
+
+	/** Wall-clock ms at which the intro wipe started, or null when it isn't running.
+	 *  Started on the first textured frame (not on connect): the wipe reveals the
+	 *  picture, so it can only begin once there IS a picture to reveal. */
+	private introStart: number | null = null;
+	/** Set once the wipe has run, so it plays as an ENTRANCE and never replays —
+	 *  a clip swap mid-carousel must not re-develop the whole frame. */
+	private introDone = false;
 
 	// Recent pointer positions (device px, canvas-relative) with timestamps,
 	// newest last. Drives the color-reveal comet trail; ages out over TRAIL_MS.
@@ -163,11 +202,19 @@ export class DottedGridElement extends HTMLElement {
 			premultipliedAlpha: false,
 		});
 		// No WebGL2: bail gracefully. The element keeps its CSS background so the
-		// page still looks intentional rather than broken.
-		if (!gl) return;
+		// page still looks intentional rather than broken. Announce readiness on the
+		// way out — there will never be a frame here, and anything waiting on this
+		// element must not be held back by a browser that can't run the effect.
+		if (!gl) {
+			this.announceReady();
+			return;
+		}
 		this.gl = gl;
 
-		if (!this.initGL()) return;
+		if (!this.initGL()) {
+			this.announceReady();
+			return;
+		}
 
 		this.video = this.createVideo();
 		this.appendChild(this.video);
@@ -260,6 +307,13 @@ export class DottedGridElement extends HTMLElement {
 		this.uniforms = {};
 		this.gl = null;
 		this.textureReady = false;
+		// Reset the announcement too: a re-connected element (ClientRouter can move
+		// nodes between documents) starts from a blank canvas, so it must be allowed
+		// to fade in again rather than inheriting a stale "ready".
+		this.announcedReady = false;
+		this.introStart = null;
+		this.introDone = false;
+		delete this.dataset.ready;
 
 		this.canvas?.remove();
 		this.canvas = null;
@@ -446,6 +500,45 @@ export class DottedGridElement extends HTMLElement {
 		});
 	}
 
+	/**
+	 * Intro-wipe progress in [0,1]: 0 = blank grid, 1 = the finished image.
+	 *
+	 * Returns 1 (wipe off) unless the `intro` attribute is present, and also for
+	 * reduced motion — a develop-in is decorative, so that visitor gets the image
+	 * outright. The clock starts at the first textured frame, so a slow network
+	 * delays the wipe rather than eating it.
+	 *
+	 * Eased ease-OUT (not smoothstep): the wavefront should leave the highlights
+	 * promptly and then decelerate as it works down into the shadows, which is both
+	 * how a print actually develops and where the interesting detail is. A
+	 * symmetric smoothstep instead spends its slow phase at BOTH ends, and since the
+	 * shader's shoulder already softens the start, the two compounded into ~0.8s of
+	 * a 2.6s wipe where nothing perceptible happened.
+	 */
+	private introProgress(): number {
+		if (this.introDone || !this.hasAttribute("intro")) return 1;
+		if (this.reducedMotion?.matches) return 1;
+		if (this.introStart === null) return 0; // no frame yet: hold the grid empty
+
+		// Hold empty for the delay, THEN develop. Measured from the first decoded
+		// frame like the wipe itself, so the two compose into one predictable
+		// entrance regardless of how long the video took to arrive.
+		// numZero (not num): an explicit intro-delay="0" must mean "start immediately"
+		// rather than falling back to the default. It already clamps negatives.
+		const elapsed = performance.now() - this.introStart;
+		const delay = this.numZero("intro-delay", DEFAULTS.introDelayMs);
+		if (elapsed < delay) return 0;
+
+		const ms = Math.max(1, this.num("intro", DEFAULTS.introMs));
+		const t = Math.min(1, (elapsed - delay) / ms);
+		if (t >= 1) {
+			// Latch: past the end the branch is skipped entirely from here on.
+			this.introDone = true;
+			return 1;
+		}
+		return t * (2 - t); // easeOutQuad
+	}
+
 	/** True when the visitor has opted into reduced data usage (Save-Data header
 	 * or the browser's data-saver toggle). Used to soften preload. */
 	private saveData(): boolean {
@@ -503,6 +596,13 @@ export class DottedGridElement extends HTMLElement {
 		uniform float uTime;        // seconds, for the shimmer pulse
 		uniform float uShimmer;     // fraction 0..1 of dots that shimmer (0 => off)
 		uniform float uRevealBoost; // 0 = raw sampled color, 1 = snap to ANSI palette
+
+		// INTRO WIPE. 0 = nothing drawn (flat backdrop), 1 = the full image. Cells
+		// cross in by BRIGHTNESS — the highlights arrive first and the shadows last,
+		// so the picture develops out of the background like a photographic print
+		// rather than cross-fading as one flat layer. 1 disables it entirely.
+		uniform float uIntro;
+		uniform float uIntroJitter; // randomness in the wavefront, in brightness units
 
 		// "cover" mapping: fit the video across the canvas without stretching,
 		// centered, cropping the overflowing axis.
@@ -584,6 +684,41 @@ export class DottedGridElement extends HTMLElement {
 				amount = step;
 			}
 
+			// INTRO WIPE, scaling "amount" -- the dot's SIZE driver -- rather than the
+			// final color. That makes each dot GROW from nothing to its true size, so
+			// the reveal speaks the grid's own vocabulary: the quantity that encodes
+			// brightness also encodes arrival. Fading the finished image instead would
+			// just be a cross-dissolve with extra steps.
+			//
+			// The wavefront is a moving threshold on brightness: at uIntro = t, cells
+			// brighter than roughly (1 - t) have arrived and dimmer ones have not, with
+			// a soft shoulder so the edge is a gradient rather than a hard cut.
+			// Highlights therefore land first and the shadows fill in last.
+			//
+			// Deliberately AFTER the level quantization: the ramp fixes each dot's
+			// TARGET size and the intro then scales continuously toward it. Quantizing
+			// afterwards instead would make every dot climb the ramp's discrete steps
+			// on its way in, which reads as chunky stair-stepping mid-animation.
+			//
+			// Gated on < 1.0 so the steady state costs nothing -- a uniform branch, so
+			// every fragment takes the same path and there is no warp divergence.
+			// Per-cell arrival, 0 = not yet here, 1 = fully arrived. Kept in scope past
+			// this block because the CRT layers below have to honour it too.
+			float arrived = 1.0;
+			if (uIntro < 1.0) {
+				// Rank this cell on the wavefront by its own brightness, plus a little
+				// per-cell noise so the boundary breaks into grain instead of sweeping
+				// as a visible contour through flat regions of the image.
+				float rank = b + (hash(cell) - 0.5) * uIntroJitter;
+				// Widen the sweep past both ends so uIntro 0 is genuinely empty (even
+				// the brightest cell is out) and 1 is genuinely complete (even the
+				// darkest is in), jitter included.
+				const float SHOULDER = 0.22; // softness of the arrival edge
+				float front = mix(1.0 + uIntroJitter, -uIntroJitter - SHOULDER, uIntro);
+				arrived = smoothstep(front, front + SHOULDER, rank);
+				amount *= arrived;
+			}
+
 			// Dot silhouette. Three shapes share the same half-width (device px);
 			// only the edge test differs.
 			float halfCell = uCell * 0.5;
@@ -639,6 +774,10 @@ export class DottedGridElement extends HTMLElement {
 
 			// Cross-hatch engraving in the darkest cells: a rotated dot-lattice whose
 			// marks grow denser as brightness falls (branch-gated to shadow cells).
+			// NB the * arrived at the end: this layer keys off LOW amount, and the intro
+			// wipe drives amount toward 0 — so without it the hatch would grow STRONGER
+			// the less of a cell had arrived, actively drawing the shadow texture over
+			// the very cells the wipe is holding back.
 			float hatch = 0.0;
 			if (uCrosshatch > 0.0 && amount < 0.4) {
 				float shadow = smoothstep(0.4, 0.0, amount); // 1 in the darkest cells
@@ -649,7 +788,7 @@ export class DottedGridElement extends HTMLElement {
 				vec2 hcenter = (hcell + 0.5) * spacing;
 				float hd = length(rp - hcenter);
 				float hr = mix(0.4, spacing * 0.18, shadow);
-				hatch = (1.0 - smoothstep(hr - 0.6, hr + 0.6, hd)) * shadow * uCrosshatch;
+				hatch = (1.0 - smoothstep(hr - 0.6, hr + 0.6, hd)) * shadow * uCrosshatch * arrived;
 			}
 
 			// --- color reveal: how much of the true video color to show here -----
@@ -716,15 +855,20 @@ export class DottedGridElement extends HTMLElement {
 			result += hiPole * rim * 0.6;
 
 			// CRT scanlines: darken alternating device-pixel rows. Branch-gated.
+			// Scaled by uIntro (the GLOBAL progress, not per-cell "arrived"): these two
+			// layers are properties of the whole display rather than of any one dot, so
+			// they come up with the picture as a whole. Without this the "empty" grid is
+			// not actually empty — it is a striped, corner-darkened rectangle, which is
+			// what a fully-suppressed wipe was still showing.
 			if (uScanlines > 0.0) {
 				float scan = 0.5 + 0.5 * sin(vUv.y * uResolution.y * 3.14159265);
-				result *= 1.0 - uScanlines * (1.0 - scan);
+				result *= 1.0 - uScanlines * uIntro * (1.0 - scan);
 			}
 			// Vignette: darken toward the frame corners. Branch-gated.
 			if (uVignette > 0.0) {
 				vec2 vg = vUv * (1.0 - vUv);
 				float v = pow(clamp(vg.x * vg.y * 16.0, 0.0, 1.0), uVignette * 0.6);
-				result *= mix(1.0, v, uVignette);
+				result *= mix(1.0, v, uVignette * uIntro);
 			}
 
 			fragColor = vec4(result, 1.0);
@@ -777,6 +921,8 @@ export class DottedGridElement extends HTMLElement {
 			"uScanlines",
 			"uVignette",
 			"uCrosshatch",
+			"uIntro",
+			"uIntroJitter",
 		];
 		for (const n of names) this.uniforms[n] = gl.getUniformLocation(program, n);
 		return true;
@@ -974,10 +1120,51 @@ export class DottedGridElement extends HTMLElement {
 		gl.uniform1f(this.uniforms.uScanlines, this.numZero("scanlines", DEFAULTS.scanlines));
 		gl.uniform1f(this.uniforms.uVignette, this.numZero("vignette", DEFAULTS.vignette));
 		gl.uniform1f(this.uniforms.uCrosshatch, this.numZero("crosshatch", DEFAULTS.crosshatch));
+
+		// Intro wipe. Read BEFORE the draw so this frame paints the current progress,
+		// and note it must be sampled every frame while running — see the pump in
+		// announceReady() that keeps frames coming even when the video is paused.
+		const intro = this.introProgress();
+		gl.uniform1f(this.uniforms.uIntro, intro);
+		gl.uniform1f(
+			this.uniforms.uIntroJitter,
+			this.num("intro-jitter", DEFAULTS.introJitter)
+		);
+
 		this.uploadReveal(gl, dpr);
 
 		gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 		gl.bindVertexArray(null);
+
+		// Keep the wipe animating while it runs. The rAF/rVFC loop only runs when the
+		// video is PLAYING, so a paused or reduced-motion-static grid would otherwise
+		// freeze the wipe at whatever progress its single one-shot paint captured.
+		if (intro < 1) this.scheduleRender();
+
+		// The canvas now holds real pixels. Announce AFTER the draw (not when
+		// textureReady flips above): the CSS fade is keyed off this, and starting it
+		// a frame early would fade in an empty canvas.
+		this.announceReady();
+	}
+
+	/**
+	 * Publish "there is something to look at" — once per element. Sets a
+	 * `data-ready` marker (styles.css fades the canvas in on it, and it lets an
+	 * observer that arrives late detect the state it missed) and dispatches a
+	 * bubbling `dotted-grid:ready`, matching the `dotted-grid:ended` idiom.
+	 *
+	 * Also called on the paths where there will never BE a frame — no WebGL2, or a
+	 * shader that failed to compile — because a consumer waiting on this event must
+	 * not be left waiting forever by a browser that simply can't render the effect.
+	 */
+	private announceReady() {
+		if (this.announcedReady) return;
+		this.announcedReady = true;
+		// Start the intro wipe from the moment there is actually an image to develop,
+		// so a slow video delays the animation rather than consuming it.
+		if (this.introStart === null) this.introStart = performance.now();
+		this.dataset.ready = "true";
+		this.dispatchEvent(new CustomEvent("dotted-grid:ready", { bubbles: true }));
 	}
 
 	// --- color reveal ------------------------------------------------------

@@ -278,6 +278,9 @@ export class VideoCarouselElement extends HTMLElement {
 		this.caption = null;
 		this.lastRulerExtent = -1;
 		this.lastBottomExtent = -1;
+		// A re-connected element rebuilds its ruler from the authored ticks, so let
+		// the strip fade in again rather than inheriting a stale "ready".
+		delete this.dataset.ready;
 	}
 
 	// --- ruler construction ------------------------------------------------
@@ -389,6 +392,17 @@ export class VideoCarouselElement extends HTMLElement {
 		this.marker.setAttribute("aria-hidden", "true");
 
 		ruler.replaceChildren(this.strip, this.marker);
+
+		// The authored no-JS ticks (.vc__tick--major, one per clip) have just been
+		// thrown away and replaced by the generated cadence strip, which looks nothing
+		// like them — a visible substitution on hydration. Mark the host so CSS can
+		// fade the finished strip in over that swap, and announce it for consumers.
+		// Opacity only, deliberately: the ruler's BOX must keep its height, because
+		// publishMetrics() measures it to publish --vc-bottom-ui-extent (which the
+		// hero relays into --hero-floor and the whole fold arithmetic), and the
+		// layout spec fails outright on a zero-height ruler or caption.
+		this.dataset.ready = "true";
+		this.dispatchEvent(new CustomEvent("video-carousel:ready", { bubbles: true }));
 	}
 
 	private attachRulerInteraction() {
