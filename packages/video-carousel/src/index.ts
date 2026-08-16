@@ -593,6 +593,14 @@ export class VideoCarouselElement extends HTMLElement {
 
 		if (this.grid) {
 			if (this.grid.getAttribute("src") !== clip.src) {
+				// CUT, don't blend, when the visitor PICKED this clip. A transition is a
+				// passive handoff: right when autoplay moves on by itself, wrong for a
+				// deliberate selection, where blending from the clip they just left means
+				// their pick opens on the previous video and then transitions away from
+				// it. Tapping a date should land on that date.
+				if (userDriven) {
+					(this.grid as { cutNext?: () => void }).cutNext?.();
+				}
 				this.crossfade();
 				// Set src-webm first so it's present when the grid reacts to `src`;
 				// setAttribute fires attributeChangedCallback per attr, and the src

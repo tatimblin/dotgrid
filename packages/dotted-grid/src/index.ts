@@ -218,6 +218,10 @@ export class DottedGridElement extends HTMLElement {
 	/** True while prevTexture holds a real outgoing frame — without it a transition
 	 *  would blend against an empty (black) second source. */
 	private xfadeHasPrev = false;
+	/** Set by cutNext(): make the next swap a hard cut instead of a transition, then
+	 *  clear. Lets a host distinguish an automatic advance (transition) from one the
+	 *  visitor asked for (cut). */
+	private skipNextXfade = false;
 	/**
 	 * Buffers whose "I am nearly over" signal has already been sent. The advance
 	 * fires EARLY (see maybeAnnounceEnding), so the clip's own later `ended` must be
@@ -442,6 +446,20 @@ export class DottedGridElement extends HTMLElement {
 			/* seeking may throw before metadata; play() below still restarts it */
 		}
 		this.applyPlaybackState();
+	}
+
+	/**
+	 * Suppress the `xfade` transition for the NEXT source swap only, so it cuts
+	 * straight to the incoming clip.
+	 *
+	 * For a host whose change was explicitly REQUESTED rather than automatic: a
+	 * transition blends out of the outgoing clip, so a visitor who picks a clip would
+	 * see the one they just left play on and then dissolve away. Cutting makes the
+	 * pick land where they aimed. One-shot — the flag is consumed by that swap, so
+	 * autoplay's own advances keep their transition.
+	 */
+	cutNext() {
+		this.skipNextXfade = true;
 	}
 
 	// --- setup -------------------------------------------------------------
@@ -1560,6 +1578,21 @@ export class DottedGridElement extends HTMLElement {
 	 */
 	private beginTransition(outgoing: HTMLVideoElement | null): boolean {
 		const gl = this.gl;
+		// Consume the one-shot cut request FIRST, and unconditionally: if it only
+		// cleared on the paths that go on to transition, a cut requested while (say)
+		// reduced motion was on would linger and swallow a later real transition.
+		const cut = this.skipNextXfade;
+		this.skipNextXfade = false;
+
+		if (cut) {
+			// End any transition still in flight before cutting. A visitor can pick a new
+			// clip mid-blend (a fast scrub through the ruler does it constantly), and the
+			// buffer that blend was reading is about to be retired — leaving it running
+			// would blend the new clip against a dead texture.
+			this.endTransition();
+			return false;
+		}
+
 		if (!gl || !this.prevTexture) return false;
 		if (!this.hasAttribute("xfade") || this.reducedMotion?.matches) return false;
 		if (!outgoing || outgoing.readyState < 2 || outgoing.videoWidth === 0) return false;
