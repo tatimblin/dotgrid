@@ -752,9 +752,21 @@ export class VideoCarouselElement extends HTMLElement {
 		}
 	}
 
-	/** Briefly dip the stage opacity around a src swap (skipped for reduced motion). */
+	/**
+	 * Briefly dip the stage opacity around a src swap — the pre-shader way of hiding
+	 * the moment a clip is exchanged.
+	 *
+	 * Skipped when the grid runs its own `xfade` transition, which now covers the swap
+	 * per cell and far better: dipping as well would fade the whole stage (video AND
+	 * caption) out and back IN FRONT OF that transition, reading as a flash before the
+	 * effect rather than part of it. Also skipped for reduced motion.
+	 *
+	 * Kept for the no-xfade case, where a bare src swap would otherwise show a visible
+	 * hitch.
+	 */
 	private crossfade() {
 		if (!this.stage || this.reducedMotion?.matches) return;
+		if (this.grid?.hasAttribute("xfade")) return;
 		this.stage.classList.add("is-swapping");
 		if (this.swapTimer !== null) clearTimeout(this.swapTimer);
 		this.swapTimer = window.setTimeout(() => {
