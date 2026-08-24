@@ -46,6 +46,15 @@ video-carousel {
 	   pre-JS/first-paint value, derived from the ruler geometry so it is never a
 	   magic number. Only meaningful when a consumer bottom-anchors that UI. */
 	--vc-bottom-ui-extent: var(--vc-ruler-h);
+	/* The caption's measured height, for a consumer that STACKS against it (the hero
+	   lifts the ruler by exactly this much to sit above the caption). JS republishes
+	   the real value — including wraps, which change per clip and per width; this is
+	   the single-line first-paint estimate, composed from the caption's own type
+	   rather than guessed: the caption's 0.75rem over the inherited body line-height
+	   (--line-height-base, 1.6), which is exactly the 19.2px it measures at. The
+	   literal is restated here because this package is consumed standalone, without
+	   the DS token layer — the same fallback convention as the motion tokens below. */
+	--vc-caption-h: calc(0.75rem * 1.6);
 }
 
 /* Ruler + card share a row; align-items:stretch makes the ruler track the card
@@ -293,22 +302,24 @@ video-carousel {
    `left`, ticks become vertical bars growing by `height`, and the marker is a
    vertical bar at the horizontal center.
 
-   BASELINE-DOWN. Everything on this axis hangs off the ruler's BOTTOM edge:
-   ticks stand on that baseline and grow UPWARD as they magnify, with the year
-   labels ABOVE them. Two reasons:
+   BASELINE-UP. Everything on this axis hangs off the ruler's TOP edge: ticks
+   hang from that baseline and grow DOWNWARD as they magnify, with the year
+   labels BELOW them. Two reasons, and they are the same two that once argued for
+   the opposite arrangement — what changed is which side the content is on:
 
-     1. Reading order. The horizontal ruler is used as a bottom-pinned scrubber,
-        so the years belong on the side facing the content they index, not
-        wedged against the screen edge.
-     2. It is what makes an edge fade possible. A consumer can dissolve the tick
-        ROOTS into the page (a mask over the bottom band) without touching the
-        year row — the labels are at the far end of the fade, not inside it.
-        With years below, any such fade lands on the text first, which is
-        exactly why the earlier attempt had to be reverted.
+     1. Reading order. The horizontal ruler is used as a scrubber sitting UNDER
+        the clip it indexes, so the ticks belong on the side facing that clip and
+        the years read below them, at the foot of the strip.
+     2. It is what makes an edge fade possible. The consumer dissolves the clip
+        DOWNWARD into the strip, so the fade arrives from ABOVE: it must land on
+        the tick band and be spent before it reaches the type. Ticks nearest the
+        clip, years at the far end. Put the years back on top and that fade eats
+        the labels first — the failure mode that got the earlier, mirrored version
+        of this layout reverted.
 
    Note the growth direction is a property of the ANCHOR, not of the height: JS
-   only ever writes --vc-tick-len, so anchoring at `bottom` makes that length
-   extend upward for free. */
+   only ever writes --vc-tick-len, so anchoring at `top` makes that length extend
+   downward for free. */
 .vc__ruler--horizontal {
 	width: 100%;
 	/* Room for the tick growth extent + the year-label row (--vc-ruler-h, declared on
@@ -328,7 +339,7 @@ video-carousel {
 .vc__ruler--horizontal .vc__strip {
 	right: auto;
 	left: 0;
-	/* Span the ruler's full height so the ticks' `bottom` anchor (below) resolves
+	/* Span the ruler's full height so the ticks' `top` anchor (below) resolves
 	   against the ruler's baseline rather than against a zero-height box. */
 	top: 0;
 	bottom: 0;
@@ -336,10 +347,10 @@ video-carousel {
 
 .vc__ruler--horizontal .vc__tick {
 	right: auto;
-	/* Stand on the baseline and grow upward. `top: auto` clears the vertical
-	   rule's anchor so the two can't both apply. */
-	top: auto;
-	bottom: 0;
+	/* Hang from the baseline and grow downward. `bottom: auto` is stated so this
+	   anchor and the vertical rule's can't both apply. */
+	top: 0;
+	bottom: auto;
 	width: 1px;
 	height: var(--vc-tick-len, 12px);
 	transform: translateX(-50%); /* center on its `left` position */
@@ -354,15 +365,15 @@ video-carousel {
 .vc__ruler--horizontal .vc__tick-year {
 	right: auto;
 	left: 50%;
-	/* ABOVE the tick, offset from the strip's FULL growth extent rather than from
+	/* BELOW the tick, offset from the strip's FULL growth extent rather than from
 	   this tick's own edge (`100%`): a tick's height is magnified from JS, so a
 	   tick-relative anchor would shove the label further the nearer it is to the
 	   marker — bobbing the label row and, at the extreme, pushing it past the room
 	   --vc-ruler-h reserves, where `overflow: hidden` shaves the digits. Measuring
 	   from the shared baseline instead keeps every label on one level line.
-	   `top: auto` clears the vertical rule's anchor. */
-	top: auto;
-	bottom: calc(var(--vc-max-tick-h) + var(--vc-tick-year-gap));
+	   `bottom: auto` is stated so the vertical rule's anchor can't also apply. */
+	top: calc(var(--vc-max-tick-h) + var(--vc-tick-year-gap));
+	bottom: auto;
 	line-height: var(--vc-tick-year-h);
 	transform: translateX(-50%);
 }
@@ -370,9 +381,10 @@ video-carousel {
 .vc__ruler--horizontal .vc__marker {
 	right: auto;
 	left: 50%;
-	/* On the same baseline as the ticks it selects. */
-	top: auto;
-	bottom: 0;
+	/* On the same baseline as the ticks it selects — the TOP edge, so it hangs
+	   alongside them. */
+	top: 0;
+	bottom: auto;
 	width: 2px;
 	height: var(--vc-max-tick-h);
 	transform: translateX(-50%);

@@ -102,6 +102,7 @@ export class VideoCarouselElement extends HTMLElement {
 	    notifications"). */
 	private lastRulerExtent = -1;
 	private lastBottomExtent = -1;
+	private lastCaptionH = -1;
 
 	private clips: Clip[] = [];
 	private clipTimes: number[] = []; // continuous time per clip, in years
@@ -278,6 +279,7 @@ export class VideoCarouselElement extends HTMLElement {
 		this.caption = null;
 		this.lastRulerExtent = -1;
 		this.lastBottomExtent = -1;
+		this.lastCaptionH = -1;
 		// A re-connected element rebuilds its ruler from the authored ticks, so let
 		// the strip fade in again rather than inheriting a stale "ready".
 		delete this.dataset.ready;
@@ -708,9 +710,17 @@ export class VideoCarouselElement extends HTMLElement {
 	 * occupies, so a consumer that stacks content above it can reserve exactly that
 	 * much room instead of hardcoding a guess.
 	 *
-	 * Two properties, both measured (never derived from a breakpoint):
+	 * Three properties, all measured (never derived from a breakpoint):
 	 *   --vc-ruler-extent      host bottom → ruler top. The ruler alone.
 	 *   --vc-bottom-ui-extent  host bottom → the HIGHEST of (ruler top, caption top).
+	 *   --vc-caption-h         the caption's own height, wraps included.
+	 *
+	 * --vc-caption-h exists so a consumer can STACK against the caption rather than
+	 * beside it. The full-bleed hero puts the ruler directly above the caption, and the
+	 * offset that lifts it there is the caption's height — which is not a constant: the
+	 * text changes per clip and rewraps at every width. Publishing the measured value
+	 * keeps that layout honest, in the same spirit as the two extents (a consumer should
+	 * measure this, never restate a breakpoint constant).
 	 *
 	 * The `min()` over both boxes is the point: whichever protrudes further sets the
 	 * reserve, so a caption that wraps to two lines is accounted for rather than
@@ -728,14 +738,40 @@ export class VideoCarouselElement extends HTMLElement {
 		const ruler = this.ruler;
 		if (!ruler) return;
 
+		// ORDER MATTERS, and getting it wrong is a silent, permanent staleness bug.
+		//
+		// --vc-caption-h is an INPUT to where a stacking consumer puts the ruler (the
+		// hero lifts it by exactly this much to clear the caption). So it must be
+		// written BEFORE the ruler is measured — otherwise rulerTop describes the
+		// position the ruler is about to leave, and the extents below are published one
+		// caption-height out of date.
+		//
+		// And nothing would ever correct them: this runs from a ResizeObserver, but the
+		// consequence of the write is that the ruler MOVES, not that it resizes, so no
+		// second callback is delivered. Measured before this ordering was fixed: a
+		// two-line caption left --vc-bottom-ui-extent 27px short, and the hero's heading
+		// group — which reserves exactly that much room — overlapped the ruler by 3px.
+		//
+		// The write forces a synchronous layout on the read that follows. That is the
+		// point of doing it here, and it is guarded to real changes (below), so it costs
+		// a reflow only when the caption's height has actually moved.
+		const capRect = this.caption?.getBoundingClientRect();
+		const capHeight = capRect?.height ?? 0;
+		if (Math.abs(capHeight - this.lastCaptionH) > 0.5) {
+			this.lastCaptionH = capHeight;
+			this.style.setProperty("--vc-caption-h", `${capHeight.toFixed(1)}px`);
+		}
+
 		const hostBottom = this.getBoundingClientRect().bottom;
 		const rulerTop = ruler.getBoundingClientRect().top;
 		const rulerExtent = Math.max(0, hostBottom - rulerTop);
 
-		// The caption may be display:none or absent; fall back to the ruler alone.
-		const capRect = this.caption?.getBoundingClientRect();
+		// The caption may be display:none or absent; fall back to the ruler alone. Its
+		// rect is RE-READ here rather than reusing the one above, which predates the
+		// write and may therefore describe a stale position too.
+		const capTop = this.caption?.getBoundingClientRect().top;
 		const topMost =
-			capRect && capRect.height > 0 ? Math.min(rulerTop, capRect.top) : rulerTop;
+			capTop !== undefined && capHeight > 0 ? Math.min(rulerTop, capTop) : rulerTop;
 		const bottomExtent = Math.max(0, hostBottom - topMost);
 
 		if (Math.abs(rulerExtent - this.lastRulerExtent) > 0.5) {
