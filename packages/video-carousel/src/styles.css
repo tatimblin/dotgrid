@@ -402,6 +402,16 @@ video-carousel {
 	.vc__ruler {
 		transition: none;
 	}
+
+	/* .vc__strip needs its OWN rule at matching specificity. The list above is
+	   (0,1,0); `.vc__strip.is-settling` below is (0,2,0), and a media query adds
+	   NO specificity — so the bare selector LOSES and the settle tween ran for
+	   reduced-motion users anyway. The JS guard in index.ts (`animate` is false
+	   under this preference) was the only thing honouring it; this makes the CSS
+	   correct on its own and demotes that guard to belt-and-braces. */
+	.vc__strip.is-settling {
+		transition: none;
+	}
 }
 
 /* Narrow screens: stack the video card on top with the ruler as a horizontal
