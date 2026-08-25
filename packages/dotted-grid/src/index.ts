@@ -59,7 +59,7 @@ const TRANSITIONS: Record<string, number> = {
 	rain: 1,
 };
 
-const MAX_DPR = 2; // clamp devicePixelRatio so 4K/retina stays affordable
+const MAX_DPR = 2; // default clamp on devicePixelRatio; per-instance via `max-dpr`
 const MAX_TRAIL = 32; // pointer samples kept for the color-reveal trail
 const TRAIL_MS = 600; // trail lifetime — longer than fade-in so dots trail out slowly
 
@@ -184,6 +184,7 @@ export class DottedGridElement extends HTMLElement {
 			"xfade",
 			"xfade-mode",
 			"xfade-live",
+			"max-dpr",
 		];
 	}
 
@@ -423,6 +424,11 @@ export class DottedGridElement extends HTMLElement {
 		}
 		if (name === "no-loop" && this.video) {
 			this.video.loop = !this.hasAttribute("no-loop");
+			return;
+		}
+		// The cap changes the drawing buffer's size, which a repaint alone won't do.
+		if (name === "max-dpr") {
+			this.resize();
 			return;
 		}
 		// cell-size / dot-scale / invert / color / background / gamma / contrast:
@@ -1266,13 +1272,26 @@ export class DottedGridElement extends HTMLElement {
 	 * So instead of capping to a fixed number, we render at devicePixelRatio
 	 * divided by the smallest integer that brings it within MAX_DPR:
 	 *   DPR 1 → 1 (1x),  DPR 2 → 2 (1x upscale),  DPR 3 → 1.5 (2x upscale, integer).
-	 * Every result composites at a whole-number ratio, so the lattice stays crisp,
+ * Every result composites at a whole-number ratio, so the lattice stays crisp,
 	 * and DPR-3 devices still save ~44% of the fragments vs rendering at 3x.
 	 * Read fresh each time so the ResizeObserver re-evaluates it on rotation.
-	 */
+	 *
+	 * THE CAP IS PER-INSTANCE (`max-dpr`), because the cost is per-PIXEL and the
+	 * instances differ by an order of magnitude in size. A full-bleed hero canvas is
+	 * ~1.3 Mpx at DPR 2 on a phone; the footer widget's card is a fraction of that.
+	 * Measured on the mobile hero at 8x CPU throttle, scrolling: 1.32 Mpx cost a 46.6ms
+	 * median frame, 0.33 Mpx cost 11.8ms — the canvas was ~76% of the whole frame, and
+	 * it scales with area almost exactly. So the big one takes `max-dpr="1"` and the
+	 * small one keeps the default.
+	 * Lowering the cap does NOT reintroduce the moiré this method exists to avoid: the
+	 * integer-upscale property holds at any integer cap, because the divisor is still a
+	 * ceiling. DPR 2 with cap 1 → render at 1, composite at 2x; DPR 3 → 1 at 3x. It is
+	 * a FRACTIONAL cap (1.5) that beats against the lattice, which is why this takes a
+	 * divisor rather than a Math.min. */
 	private effectiveDpr(): number {
 		const dpr = window.devicePixelRatio || 1;
-		const divisor = Math.ceil(dpr / MAX_DPR); // 1 for dpr<=2, 2 for dpr in (2,4]
+		const cap = this.num("max-dpr", MAX_DPR);
+		const divisor = Math.ceil(dpr / cap); // 1 for dpr<=cap, 2 for dpr in (cap, 2cap]
 		return dpr / divisor;
 	}
 
