@@ -97,8 +97,10 @@ video-carousel {
 	aspect-ratio: 960 / 1706;
 }
 
-/* Caption bar beneath the video: white panel, dark text. */
+/* Caption bar beneath the video: white panel, dark text. Chrome like the ruler, so
+   it takes the same UI face (see .vc__tick-year). */
 .vc__caption {
+	font-family: var(--font-ui, inherit);
 	display: flex;
 	flex-wrap: wrap;
 	justify-content: space-between;
@@ -234,8 +236,12 @@ video-carousel {
 	height: 2px;
 }
 
-/* Small year text to the left of a year tick. */
+/* Small year text to the left of a year tick. Set in the consumer's UI face when
+   there is one — these are read as instrument markings, not as prose — and falling
+   back to `inherit` keeps the package usable standalone, same as the --color-* and
+   --space-* tokens it reads elsewhere. */
 .vc__tick-year {
+	font-family: var(--font-ui, inherit);
 	position: absolute;
 	right: calc(100% + var(--space-2, 0.5rem));
 	top: 50%;
