@@ -3,6 +3,10 @@ const DEFAULTS = {
 	dotScale: 1, // max square half-width as a fraction of the cell half-size;
 	// 1 fills the cell edge-to-edge so the brightest level reads as a solid block
 	levels: 5, // discrete brightness steps (ASCII-ramp look); <=1 => continuous
+	cutoff: 0, // brightness at/below which a cell goes fully dark — no dot, no
+	// hatch (0 => the lever is off and every cell draws as it always did)
+	denoise: 0, // 0 => one texel decides the cell; 1 => average the cell's footprint
+	feather: 0, // width of the dissolve above `cutoff`; 0 => the cutoff is a hard edge
 	gamma: 0.8, // luminance shaping exponent (>1 darkens mids)
 	contrast: 1.1, // luminance contrast around 0.5
 	color: "", // dot color; empty => read --color-fg
@@ -80,6 +84,37 @@ const TRAIL_MS = 600; // trail lifetime — longer than fade-in so dots trail ou
  *   levels        discrete brightness steps for an ASCII-ramp look (default 5);
  *                 each step is a fixed square size, brightest fills the cell.
  *                 Set to 1 (or 0) for a smooth, continuous size ramp.
+ *   cutoff        0..1 black point for the DOT ITSELF: any cell whose shaped
+ *                 brightness lands at or below it draws nothing, leaving bare
+ *                 background instead of a minimum-size dot (default 0). Applied
+ *                 after `levels`, so it reads as "drop the bottom rungs of the
+ *                 ramp": with levels=5, 0.2 empties the dimmest rung, 0.4 the
+ *                 dimmest two. Lets shadows go genuinely empty so the grid reads
+ *                 as sparse constellation rather than an even field of specks.
+ *                 A cut-off cell is off ENTIRELY — the crosshatch engraving is
+ *                 suppressed there too, since that layer keys on low brightness and
+ *                 would otherwise come up to full strength in precisely the cells
+ *                 this emptied, trading a field of faint dots for a field of faint
+ *                 hatch marks. `crosshatch` still shades the dim-but-surviving
+ *                 cells above the cutoff.
+ *   feather       0..1; width, in brightness units, of a dissolve band directly
+ *                 above `cutoff` (default 0 = the cutoff is a hard edge). Dots in
+ *                 the band shrink continuously to nothing instead of the ramp's
+ *                 lowest rung popping in at full size, so the field fades out rather
+ *                 than ending at a contour. Measured against the UN-quantized
+ *                 brightness, so it is unaffected by `levels`; every other layer
+ *                 (the crosshatch) fades with it. Works with `cutoff` at 0, where the
+ *                 band is simply 0..feather.
+ *   denoise       0..1; read each cell as the AVERAGE of its own footprint (5 taps)
+ *                 instead of one texel at its centre (default 0 = point sample).
+ *                 Video sources carry codec noise and macroblock structure that a
+ *                 point-sampled halftone turns into salt-and-pepper strays and a
+ *                 dithered edge along a contour — worst with a low `gamma` (whose
+ *                 slope near black magnifies a 1/255 wobble) or alongside `cutoff`
+ *                 (which turns that wobble into presence or absence). Costs 4 extra
+ *                 texture reads per fragment, all cache-friendly (every fragment in
+ *                 a cell reads the same texels), so it is opt-in per consumer rather
+ *                 than always on. 1 is the full average; values between keep some grain.
  *   invert        boolean; flips the brightness->radius mapping
  *   color         dot color (default: CSS --color-fg)
  *   background    backdrop color (default: CSS --color-bg)
@@ -163,6 +198,9 @@ export class DottedGridElement extends HTMLElement {
 			"cell-size",
 			"dot-scale",
 			"levels",
+			"cutoff",
+			"denoise",
+			"feather",
 			"invert",
 			"color",
 			"background",
@@ -742,6 +780,9 @@ export class DottedGridElement extends HTMLElement {
 		uniform float uCell;        // cell size in device px
 		uniform float uDotScale;    // max radius as fraction of cell half-size
 		uniform float uLevels;      // discrete brightness steps (<=1 => continuous)
+		uniform float uCutoff;      // dots at/below this brightness are not drawn at all
+		uniform float uDenoise;     // 0 = point-sample the cell centre, 1 = average the cell
+		uniform float uFeather;     // width (brightness units) of the dissolve above uCutoff
 		uniform float uInvert;      // 0 or 1
 		uniform float uGamma;
 		uniform float uContrast;
@@ -786,6 +827,37 @@ export class DottedGridElement extends HTMLElement {
 		}
 
 		float luma(vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
+
+		// WHAT ONE CELL SEES. Point-sampling the centre asks a single texel to speak for
+		// the whole cell, and video is the worst possible source for that: an H.264 frame
+		// carries quantization noise and macroblock structure that no eye can see in the
+		// footage itself, but a halftone hands every one of those wobbles a vote on
+		// whether its cell lights up. The damage is nonlinear-shaped too -- pow(b, gamma)
+		// with a low gamma has a huge slope near black, so a 1/255 codec wobble in the
+		// shadows becomes a visible jump in dot size, and next to a cutoff it becomes
+		// presence or absence. That is what reads as salt-and-pepper strays and a
+		// dithered, ragged edge along a fold.
+		//
+		// Averaging the cell's own footprint answers the question the halftone is
+		// actually asking -- "how bright is this REGION" — instead of "how bright is this
+		// one texel". Five taps (centre plus the quarter-points) on a rotated-square
+		// pattern: enough to swamp per-texel noise, cheap because every fragment in a
+		// cell reads the same five texels, so they are already in cache.
+		//
+		// uDenoise blends between the two rather than switching, so a consumer can keep
+		// some of the grain if the noise is part of the look.
+		vec3 sampleCell(sampler2D tex, vec2 centerPx) {
+			vec2 c = clamp(coverUv(centerPx / uResolution), 0.0, 1.0);
+			vec3 mid = texture(tex, c).rgb;
+			if (uDenoise <= 0.0) return mid;
+			float o = uCell * 0.25;
+			vec3 sum = mid;
+			sum += texture(tex, clamp(coverUv((centerPx + vec2(-o, -o)) / uResolution), 0.0, 1.0)).rgb;
+			sum += texture(tex, clamp(coverUv((centerPx + vec2( o, -o)) / uResolution), 0.0, 1.0)).rgb;
+			sum += texture(tex, clamp(coverUv((centerPx + vec2(-o,  o)) / uResolution), 0.0, 1.0)).rgb;
+			sum += texture(tex, clamp(coverUv((centerPx + vec2( o,  o)) / uResolution), 0.0, 1.0)).rgb;
+			return mix(mid, sum * 0.2, uDenoise);
+		}
 
 		// Highlight lift: the brightest cells blend from uColor toward the contrast
 		// pole of the background (white on a dark bg, black on a light bg) so
@@ -833,10 +905,10 @@ export class DottedGridElement extends HTMLElement {
 			vec2 cell = floor(px / uCell);
 			vec2 cellCenterPx = (cell + 0.5) * uCell;
 
-			// Sample the video at the cell center (cover-mapped).
+			// Sample the video over the cell (cover-mapped) — see sampleCell.
 			vec2 sampleUv = coverUv(cellCenterPx / uResolution);
 			vec2 sUv = clamp(sampleUv, 0.0, 1.0);
-			vec3 src = texture(uTex, sUv).rgb;
+			vec3 src = sampleCell(uTex, cellCenterPx);
 
 			// CLIP TRANSITION. Blends the outgoing frame into the incoming one PER CELL
 			// rather than fading the whole stage, so the grid itself carries the cut.
@@ -861,7 +933,7 @@ export class DottedGridElement extends HTMLElement {
 			float xfTintAmt = 0.0;
 
 			if (uXfade < 1.0) {
-				vec3 prev = texture(uPrevTex, sUv).rgb;
+				vec3 prev = sampleCell(uPrevTex, cellCenterPx);
 				float t = uXfade;
 				float m = uXfadeMode;
 
@@ -953,9 +1025,67 @@ export class DottedGridElement extends HTMLElement {
 			// ASCII-ramp look: snap brightness to a few discrete steps so the grid
 			// reads as stepped glyph densities rather than a smooth size gradient.
 			// Level 0 is empty; the top level fills the whole cell (solid block).
+			// The pre-quantization value, kept for the feather below. The ramp's whole
+			// job is to snap sizes to a few rungs, so nothing downstream of it can fade
+			// anything smoothly — a dissolve needs the continuous signal back.
+			float raw = amount;
+
 			if (uLevels > 1.0) {
 				float step = round(amount * uLevels) / uLevels;
 				amount = step;
+			}
+
+			// BLACK POINT. Below uCutoff a cell draws no dot at all — bare background,
+			// not a minimum-size speck. Without it the ramp's floor is whatever the
+			// quantizer's lowest non-zero rung happens to be (1/uLevels), so a merely
+			// dim region still reads as an even field of small dots; the grid can never
+			// go sparse. Note round() above makes the empty rung only half as wide as
+			// the others, so "off" is the hardest value in the ramp to actually land on
+			// — this is the lever that widens it.
+			//
+			// Deliberately AFTER quantization so the setting composes with "levels" as
+			// "drop the bottom N rungs" rather than shifting where every rung falls,
+			// and BEFORE the intro wipe so a cut-off cell stays empty throughout the
+			// entrance instead of growing in and then popping out at the end.
+			//
+			// <= , so cutoff exactly on a rung (0.2 with levels=5) clears that rung
+			// rather than leaving it a hair above the line.
+			//
+			// cellOn carries the verdict down to the CRT layers below, because "no dot"
+			// is not the same as "nothing here" — the crosshatch keys on LOW amount and
+			// so would come up to FULL strength in exactly the cells this just emptied,
+			// replacing every cut dot with an engraving mark and leaving the flat field
+			// the cutoff was reached for in the first place. Switching a cell off has to
+			// switch off everything the cell draws.
+			//
+			// Gated on uCutoff > 0 so the lever is genuinely inert at its default: an
+			// already-black cell keeps its hatch exactly as before, and only a cutoff
+			// someone asked for takes cells all the way out.
+			float cellOn = 1.0;
+			if (uCutoff > 0.0 && amount <= uCutoff) {
+				amount = 0.0;
+				cellOn = 0.0;
+			}
+
+			// FEATHER. The cutoff on its own is a cliff, and the ramp above it cannot
+			// soften one: quantization means the lowest surviving rung arrives at its
+			// full size: 1/levels of the cell, all at once, along whatever contour the
+			// threshold happens to trace. The field therefore ends at a hard coastline
+			// however well the tone curve is set.
+			//
+			// So dots in a band above the cutoff scale continuously to nothing, against
+			// "raw" — the un-quantized brightness — which is the only signal left that
+			// still varies smoothly across that contour. The edge of the field becomes a
+			// gradient of shrinking dots that dissolve into the background, and because
+			// the dot mask feathers by coverage once a dot drops below a pixel, the very
+			// last of it fades in alpha rather than blinking out.
+			//
+			// cellOn carries the same fade (not a binary any more) so every other layer
+			// leaves with the dots instead of standing there once they have gone.
+			if (uFeather > 0.0) {
+				float fade = smoothstep(uCutoff, uCutoff + uFeather, raw);
+				amount *= fade;
+				cellOn = min(cellOn, fade);
 			}
 
 			// INTRO WIPE, scaling "amount" -- the dot's SIZE driver -- rather than the
@@ -1057,7 +1187,7 @@ export class DottedGridElement extends HTMLElement {
 			// the less of a cell had arrived, actively drawing the shadow texture over
 			// the very cells the wipe is holding back.
 			float hatch = 0.0;
-			if (uCrosshatch > 0.0 && amount < 0.4) {
+			if (uCrosshatch > 0.0 && amount < 0.4 && cellOn > 0.0) {
 				float shadow = smoothstep(0.4, 0.0, amount); // 1 in the darkest cells
 				float spacing = uCell * 0.7;
 				float ca = cos(0.4363), sa = sin(0.4363);   // ~25deg
@@ -1066,7 +1196,7 @@ export class DottedGridElement extends HTMLElement {
 				vec2 hcenter = (hcell + 0.5) * spacing;
 				float hd = length(rp - hcenter);
 				float hr = mix(0.4, spacing * 0.18, shadow);
-				hatch = (1.0 - smoothstep(hr - 0.6, hr + 0.6, hd)) * shadow * uCrosshatch * arrived;
+				hatch = (1.0 - smoothstep(hr - 0.6, hr + 0.6, hd)) * shadow * uCrosshatch * arrived * cellOn;
 			}
 
 			// --- color reveal: how much of the true video color to show here -----
@@ -1197,6 +1327,9 @@ export class DottedGridElement extends HTMLElement {
 			"uCell",
 			"uDotScale",
 			"uLevels",
+			"uCutoff",
+			"uDenoise",
+			"uFeather",
 			"uInvert",
 			"uGamma",
 			"uContrast",
@@ -1427,6 +1560,18 @@ export class DottedGridElement extends HTMLElement {
 		gl.uniform1f(this.uniforms.uCell, this.num("cell-size", DEFAULTS.cellSize) * dpr);
 		gl.uniform1f(this.uniforms.uDotScale, this.num("dot-scale", DEFAULTS.dotScale));
 		gl.uniform1f(this.uniforms.uLevels, this.num("levels", DEFAULTS.levels));
+		gl.uniform1f(
+			this.uniforms.uCutoff,
+			Math.min(1, this.numZero("cutoff", DEFAULTS.cutoff))
+		);
+		gl.uniform1f(
+			this.uniforms.uDenoise,
+			Math.min(1, this.numZero("denoise", DEFAULTS.denoise))
+		);
+		gl.uniform1f(
+			this.uniforms.uFeather,
+			Math.min(1, this.numZero("feather", DEFAULTS.feather))
+		);
 		gl.uniform1f(this.uniforms.uInvert, this.hasAttribute("invert") ? 1 : 0);
 		gl.uniform1f(this.uniforms.uGamma, this.num("gamma", DEFAULTS.gamma));
 		gl.uniform1f(this.uniforms.uContrast, this.num("contrast", DEFAULTS.contrast));
