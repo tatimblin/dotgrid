@@ -121,6 +121,12 @@ const TRAIL_MS = 600; // trail lifetime — longer than fade-in so dots trail ou
  *   gamma         luminance exponent (default 0.8)
  *   contrast      luminance contrast (default 1.1)
  *   paused        boolean; freezes the animation
+ *   rate          playback speed multiplier for the video (default 1). <1 slows the
+ *                 scene down, >1 speeds it up; clamped to the range browsers
+ *                 accept (0.0625..16). Applies to BOTH buffers, so a clip swap
+ *                 keeps the same tempo. Cheaper than re-encoding the source at a
+ *                 lower frame rate, and the halftone follows the video's real
+ *                 cadence (rVFC), so a slow rate simply means fewer redraws.
  *   color-reveal  pointer trail radius in CSS px; dots within it show the video's
  *                 true color, fading in fast and out slow (comet trail). Absent
  *                 => no trail; empty => default radius.
@@ -207,6 +213,7 @@ export class DottedGridElement extends HTMLElement {
 			"gamma",
 			"contrast",
 			"paused",
+			"rate",
 			"color-reveal",
 			"shimmer",
 			"reveal-boost",
@@ -498,6 +505,10 @@ export class DottedGridElement extends HTMLElement {
 			this.applyPlaybackState();
 			return;
 		}
+		if (name === "rate") {
+			this.applyPlaybackRate();
+			return;
+		}
 		if (name === "no-loop" && this.video) {
 			this.video.loop = !this.hasAttribute("no-loop");
 			return;
@@ -555,6 +566,7 @@ export class DottedGridElement extends HTMLElement {
 		video.loop = !this.hasAttribute("no-loop");
 		video.playsInline = true;
 		video.autoplay = true;
+		video.playbackRate = this.playbackRate();
 		// Drop to metadata under Save-Data / a slow link: the visitor has asked us
 		// not to eagerly pull whole video files. The first frame still uploads.
 		video.preload = this.saveData() ? "metadata" : "auto";
@@ -598,7 +610,10 @@ export class DottedGridElement extends HTMLElement {
 	private bindVideoListeners(video: HTMLVideoElement) {
 		// First decodable frame -> upload a texture even while paused (needed for
 		// the reduced-motion static render and to avoid a blank first paint).
-		const onData = () => this.scheduleRender();
+		const onData = () => {
+			video.playbackRate = this.playbackRate();
+			this.scheduleRender();
+		};
 		video.addEventListener("loadeddata", onData);
 		video.addEventListener("seeked", onData);
 
@@ -1493,6 +1508,20 @@ export class DottedGridElement extends HTMLElement {
 			!this.reducedMotion?.matches &&
 			this.visible
 		);
+	}
+
+	/** The `rate` attribute, clamped to what HTMLMediaElement.playbackRate accepts.
+	 * Outside 0.0625..16 browsers throw or silently ignore the assignment. */
+	private playbackRate(): number {
+		return Math.min(16, Math.max(0.0625, this.num("rate", 1)));
+	}
+
+	/** Push the current `rate` onto both buffers, so a clip swap mid-transition
+	 * doesn't hand the scene back at 1x. */
+	private applyPlaybackRate() {
+		const rate = this.playbackRate();
+		if (this.video) this.video.playbackRate = rate;
+		if (this.nextVideo) this.nextVideo.playbackRate = rate;
 	}
 
 	private applyPlaybackState() {
