@@ -61,6 +61,13 @@ const TRANSITIONS: Record<string, number> = {
 	rain: 1,
 };
 
+// Tone settings that accept a `light-` variant (e.g. light-gamma), applied while
+// the backdrop is light. The same values do not read the same in both themes: a
+// small light dot on a dark ground glows and reads larger than it is, while the
+// same dot in dark ink on a light ground reads as a speck, so a light backdrop
+// needs more ink for the same image.
+const LIGHT_ATTRS = ["gamma", "contrast", "cutoff", "feather", "dot-scale", "levels"];
+
 const MAX_DPR = 2; // default clamp on devicePixelRatio; per-instance via `max-dpr`
 const MAX_TRAIL = 32; // pointer samples kept for the color-reveal trail
 const TRAIL_MS = 600; // trail lifetime — longer than fade-in so dots trail out slowly
@@ -118,6 +125,10 @@ const TRAIL_MS = 600; // trail lifetime — longer than fade-in so dots trail ou
  *   background    backdrop color (default: CSS --color-bg)
  *   gamma         luminance exponent (default 0.8)
  *   contrast      luminance contrast (default 1.1)
+ *   light-*       light-gamma, light-contrast, light-cutoff, light-feather,
+ *                 light-dot-scale, light-levels: the same setting, used instead
+ *                 while the backdrop is light (luma > 0.5). Absent => the plain
+ *                 value serves both themes.
  *   paused        boolean; freezes the animation
  *   rate          playback speed multiplier for the video (default 1). <1 slows the
  *                 scene down, >1 speeds it up; clamped to the range browsers
@@ -224,6 +235,7 @@ export class DottedGridElement extends HTMLElement {
 			"xfade-mode",
 			"xfade-live",
 			"max-dpr",
+			...LIGHT_ATTRS.map((a) => `light-${a}`),
 		];
 	}
 
@@ -1311,9 +1323,15 @@ export class DottedGridElement extends HTMLElement {
 			// halo, paint the dot, then lift its phosphor rim toward the glow pole.
 			vec3 result = uBg;
 			result = mix(result, mix(uColor, hiPole, 0.3), hatch);
-			result += hiPole * glow;
+			// Glow and rim move TOWARD the pole rather than adding it. On a dark backdrop
+			// that is the same thing (the pole is white, and bg is near 0). On a light
+			// one the pole is black, and ADDING black did nothing — so bloom was
+			// silently off on the light theme and the same settings rendered visibly
+			// fainter there than on the dark one.
+			vec3 toPole = hiPole - uBg;
+			result += toPole * glow;
 			result = mix(result, dot, mask);
-			result += hiPole * rim * 0.6;
+			result += toPole * rim * 0.6;
 
 			fragColor = vec4(result, 1.0);
 		}`;
@@ -1878,8 +1896,21 @@ export class DottedGridElement extends HTMLElement {
 		return t * (2 - t); // easeOutQuad, matching the intro wipe
 	}
 
+	/**
+	 * The attribute to read for a tone setting: its `light-` variant when one is set
+	 * and the backdrop is light, else the plain one. Keyed on the RESOLVED backdrop
+	 * (not a theme class), so it holds for any consumer and flips with the same
+	 * cache refresh that re-tints the grid.
+	 */
+	private toneAttr(attr: string): string {
+		const light = `light-${attr}`;
+		if (!this.hasAttribute(light) || !this.colorCache) return attr;
+		const [r, g, b] = this.colorCache.bg;
+		return 0.299 * r + 0.587 * g + 0.114 * b > 0.5 ? light : attr;
+	}
+
 	private num(attr: string, fallback: number): number {
-		const raw = this.getAttribute(attr);
+		const raw = this.getAttribute(this.toneAttr(attr));
 		if (raw === null) return fallback;
 		const parsed = Number.parseFloat(raw);
 		return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
@@ -1888,7 +1919,7 @@ export class DottedGridElement extends HTMLElement {
 	/** Like num() but allows 0 (and clamps negatives to 0). Used for levers where
 	 * zero is a valid setting, e.g. reveal-boost=0 (raw color, no ANSI snap). */
 	private numZero(attr: string, fallback: number): number {
-		const raw = this.getAttribute(attr);
+		const raw = this.getAttribute(this.toneAttr(attr));
 		if (raw === null) return fallback;
 		const parsed = Number.parseFloat(raw);
 		return Number.isFinite(parsed) ? Math.max(0, parsed) : fallback;
