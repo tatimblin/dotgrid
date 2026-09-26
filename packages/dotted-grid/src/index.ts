@@ -17,8 +17,6 @@ const DEFAULTS = {
 	// --- CRT "display" look (ported from the science-lab dot-matrix shader) ---
 	dotShape: 2, // 0 = square (legacy), 1 = circle, 2 = morph circle->rounded-square
 	bloom: 0.55, // 0..1 glow + phosphor rim on the brightest dots; 0 => off
-	scanlines: 0.12, // 0..1 CRT horizontal scanline darkening; 0 => off
-	vignette: 0.4, // 0..1 edge darkening; 0 => off
 	crosshatch: 0.35, // 0..1 cross-hatch shading strength in the darkest cells; 0 => off
 	// --- intro wipe (brightest dots first) ---
 	introMs: 2600, // duration of the develop-in when `intro` is present but empty
@@ -144,8 +142,6 @@ const TRAIL_MS = 600; // trail lifetime — longer than fade-in so dots trail ou
  *                 A numeric 0/1/2 works too (for the live playground slider).
  *   bloom         0..1; glow halo + phosphor rim on the brightest dots (default
  *                 0.55). 0 disables it and falls back to the subtle highlight-lift.
- *   scanlines     0..1; CRT horizontal scanline darkening (default 0.12). 0 => off.
- *   vignette      0..1; edge darkening toward the frame corners (default 0.4). 0 => off.
  *   crosshatch    0..1; cross-hatch engraving marks in the darkest cells, denser as
  *                 brightness falls (default 0.35). 0 => off.
  *   intro         boolean-or-ms; develop the picture in ONCE on arrival, brightest
@@ -220,8 +216,6 @@ export class DottedGridElement extends HTMLElement {
 			"no-loop",
 			"dot-shape",
 			"bloom",
-			"scanlines",
-			"vignette",
 			"crosshatch",
 			"intro",
 			"intro-delay",
@@ -847,8 +841,6 @@ export class DottedGridElement extends HTMLElement {
 		// CRT "display" look. Each is off at 0 so a uniform branch skips its cost.
 		uniform float uShape;       // 0 square, 1 circle, 2 morph circle->rounded-square
 		uniform float uBloom;       // 0..1 glow + phosphor rim on bright dots
-		uniform float uScanlines;   // 0..1 horizontal scanline darkening
-		uniform float uVignette;    // 0..1 edge darkening
 		uniform float uCrosshatch;  // 0..1 cross-hatch marks in the darkest cells
 
 		// Color reveal: dots within the trail radius or caught by the shimmer show
@@ -1323,23 +1315,6 @@ export class DottedGridElement extends HTMLElement {
 			result = mix(result, dot, mask);
 			result += hiPole * rim * 0.6;
 
-			// CRT scanlines: darken alternating device-pixel rows. Branch-gated.
-			// Scaled by uIntro (the GLOBAL progress, not per-cell "arrived"): these two
-			// layers are properties of the whole display rather than of any one dot, so
-			// they come up with the picture as a whole. Without this the "empty" grid is
-			// not actually empty — it is a striped, corner-darkened rectangle, which is
-			// what a fully-suppressed wipe was still showing.
-			if (uScanlines > 0.0) {
-				float scan = 0.5 + 0.5 * sin(vUv.y * uResolution.y * 3.14159265);
-				result *= 1.0 - uScanlines * uIntro * (1.0 - scan);
-			}
-			// Vignette: darken toward the frame corners. Branch-gated.
-			if (uVignette > 0.0) {
-				vec2 vg = vUv * (1.0 - vUv);
-				float v = pow(clamp(vg.x * vg.y * 16.0, 0.0, 1.0), uVignette * 0.6);
-				result *= mix(1.0, v, uVignette * uIntro);
-			}
-
 			fragColor = vec4(result, 1.0);
 		}`;
 
@@ -1399,8 +1374,6 @@ export class DottedGridElement extends HTMLElement {
 			"uRevealBoost",
 			"uShape",
 			"uBloom",
-			"uScanlines",
-			"uVignette",
 			"uCrosshatch",
 			"uIntro",
 			"uIntroJitter",
@@ -1654,8 +1627,6 @@ export class DottedGridElement extends HTMLElement {
 		gl.uniform3f(this.uniforms.uBg, br, bg, bb);
 		gl.uniform1f(this.uniforms.uShape, this.shape());
 		gl.uniform1f(this.uniforms.uBloom, this.numZero("bloom", DEFAULTS.bloom));
-		gl.uniform1f(this.uniforms.uScanlines, this.numZero("scanlines", DEFAULTS.scanlines));
-		gl.uniform1f(this.uniforms.uVignette, this.numZero("vignette", DEFAULTS.vignette));
 		gl.uniform1f(this.uniforms.uCrosshatch, this.numZero("crosshatch", DEFAULTS.crosshatch));
 
 		// Intro wipe. Read BEFORE the draw so this frame paints the current progress,
