@@ -136,6 +136,93 @@ video-carousel {
 	display: none;
 }
 
+/* The caption's two runs (VideoCarousel.astro): wrappers that stay out of the
+   layout by default, so the fields above are laid out as the grid's own items. The
+   overlay mode below is what gives them a box. */
+.vc__cap-line,
+.vc__cap-run {
+	display: contents;
+}
+
+/* CAPTION OVERLAY (`caption-overlay` on the host) -----------------------------
+   The caption laid over the clip's bottom-left corner as a TV caption: each run —
+   the title, then date · place — sits on a solid highlight that hugs its text LINE
+   BY LINE. A run is an inline box, so when it wraps it breaks into one fragment per
+   line, and `box-decoration-break: clone` gives every fragment its own padding (the
+   default, `slice`, would pad only the first fragment's start and the last one's
+   end). The result is a staircase of boxes each as wide as its own line, never one
+   rectangle around both.
+   The boxes must meet exactly between lines: an inline box's background covers its
+   CONTENT AREA (the font's ascent + descent, ~1.2em for the mono stacks here) plus
+   its block padding, whatever the line-height. So the line pitch is set to that
+   plus both paddings — --vc-cap-lh below — and adjacent fragments abut with no gap
+   (which would show the halftone through as a stripe).
+   Inverted colours: page-background type on an ink box. Over the halftone the box
+   is the one solid shape in a field of dots, so it reads in both themes wherever it
+   lands — a page-coloured box would vanish over the empty (page-coloured) floor. */
+video-carousel[caption-overlay] {
+	--vc-cap-inset: var(--space-3, 0.75rem);
+	--vc-cap-pad-x: var(--space-2, 0.5rem);
+	--vc-cap-pad-y: var(--space-1, 0.25rem);
+	/* Content area (see above) + both block paddings: one line box per fragment.
+	   The content area is font metrics, not a token — ~1.18em for the system mono
+	   stack, measured — so the estimate errs a hair SHORT: fragments then overlap
+	   by a fraction of a pixel, invisible in one opaque colour, where erring long
+	   leaves an anti-aliased seam of halftone between the lines. */
+	--vc-cap-lh: calc(1.15em + 2 * var(--vc-cap-pad-y));
+}
+video-carousel[caption-overlay] .vc__caption {
+	position: absolute;
+	/* Inset from the corner by the pad as well, so the BOX (not the text inside it)
+	   sits --vc-cap-inset from the stage edges. The end inset caps the measure. */
+	inset-inline: calc(var(--vc-cap-inset) + var(--vc-cap-pad-x));
+	inset-block-end: calc(var(--vc-cap-inset) + var(--vc-cap-pad-y));
+	z-index: 1;
+	display: block;
+	padding: 0;
+	/* One size for the whole caption, which the fields inherit (below): the pitch
+	   in --vc-cap-lh is in em, and it only closes the gap if that em is the same
+	   one the highlighted text is set in. */
+	font-size: var(--widget-font-xs, var(--font-size-0, 0.75rem));
+	pointer-events: none;
+}
+video-carousel[caption-overlay] .vc__cap-line {
+	display: block;
+	/* The pitch lives on the line (the block), so each wrapped line box is exactly
+	   one fragment tall. The runs' Mono fields set line-height 1 on themselves,
+	   which only shrinks their own inline boxes, never the line box's strut. */
+	line-height: var(--vc-cap-lh);
+}
+video-carousel[caption-overlay] .vc__cap-run {
+	display: inline;
+	padding: var(--vc-cap-pad-y) var(--vc-cap-pad-x);
+	-webkit-box-decoration-break: clone;
+	box-decoration-break: clone;
+	background: var(--text-primary, var(--color-fg, #111));
+	color: var(--color-bg, #fff);
+}
+/* The second run — date · place — steps down: the same hugging box, but in the
+   page colour with the dim ink, so the title is the one inverted shape and the
+   meta reads as its quieter footnote. Over lit dots the box still cuts it a clean
+   ground; over the empty floor it simply merges with the page. */
+video-carousel[caption-overlay] .vc__cap-run--meta {
+	background: var(--color-bg, #fff);
+	color: var(--text-secondary, currentColor);
+}
+/* The fields take the run's size and ink (their Mono tones are for type on the
+   page, not on a box); the title keeps its caps voice and may wrap. */
+video-carousel[caption-overlay] .vc__cap-run > * {
+	font-size: inherit;
+	color: inherit;
+	white-space: normal;
+}
+/* Date · place on one run, the dot only when there is a place to separate. The
+   fields are adjacent spans with no whitespace between them, hence the leading
+   no-break space. */
+video-carousel[caption-overlay] .vc__loc:not(:empty)::before {
+	content: "\00a0· ";
+}
+
 /* RULER ---------------------------------------------------------------------
    A fixed selection marker at the vertical center with a strip of uniformly
    spaced tick bars scrolling behind it (maximeheckel.com's reading-progress
