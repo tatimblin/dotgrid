@@ -91,7 +91,6 @@ export class VideoCarouselElement extends HTMLElement {
 	private ruler: HTMLElement | null = null;
 	private descEl: HTMLElement | null = null;
 	private locEl: HTMLElement | null = null;
-	private dateEl: HTMLElement | null = null;
 	private caption: HTMLElement | null = null;
 	private stage: HTMLElement | null = null;
 	private strip: HTMLElement | null = null;
@@ -157,7 +156,6 @@ export class VideoCarouselElement extends HTMLElement {
 		this.stage = this.querySelector<HTMLElement>("[data-vc-stage]");
 		this.descEl = this.querySelector<HTMLElement>("[data-vc-desc]");
 		this.locEl = this.querySelector<HTMLElement>("[data-vc-loc]");
-		this.dateEl = this.querySelector<HTMLElement>("[data-vc-date]");
 		this.caption = this.querySelector<HTMLElement>(".vc__caption");
 		if (!this.grid || !this.ruler) return;
 
@@ -625,16 +623,6 @@ export class VideoCarouselElement extends HTMLElement {
 
 		if (this.descEl) this.descEl.textContent = clip.desc;
 		if (this.locEl) this.locEl.textContent = clip.loc;
-		if (this.dateEl) this.dateEl.textContent = clip.date;
-
-		// Announce the selection for chrome that lives OUTSIDE the host (a card
-		// header's clip counter, say), which the caption fields above can't reach.
-		this.dispatchEvent(
-			new CustomEvent("video-carousel:select", {
-				bubbles: true,
-				detail: { index, count: n, clip: { ...clip } },
-			})
-		);
 
 		this.ruler?.setAttribute("aria-valuenow", String(index));
 		this.ruler?.setAttribute(
