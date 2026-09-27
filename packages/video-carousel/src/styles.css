@@ -97,28 +97,43 @@ video-carousel {
 	aspect-ratio: 960 / 1706;
 }
 
-/* Caption bar beneath the video: white panel, dark text. Chrome like the ruler, so
-   it takes the same UI face (see .vc__tick-year). */
+/* Caption beneath the video, in the instrument voices rather than on a panel: no
+   box, just type on the page. What the clip is (.vc__desc, a caps mono label in the
+   ink) leads, its date sits flush right on the same line, and the place (.vc__loc)
+   reads under it in the dim sentence-case mono. The consumer renders the three
+   fields (VideoCarousel.astro sets them as design-system Mono voices); the rules
+   here only lay them out, and fall back to a plain mono stack standalone. */
 .vc__caption {
-	font-family: var(--font-ui, inherit);
-	display: flex;
-	flex-wrap: wrap;
-	justify-content: space-between;
-	gap: var(--space-2, 0.5rem);
-	padding: var(--space-2, 0.5rem) var(--space-3, 0.75rem);
+	font-family: var(--font-mono, ui-monospace, monospace);
 	font-size: 0.75rem;
-	letter-spacing: 0.04em;
-	text-transform: uppercase;
-	color: #111;
-	background: #fff;
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) auto;
+	align-items: baseline;
+	column-gap: var(--space-3, 0.75rem);
+	row-gap: var(--space-2, 0.5rem);
+	padding-block-start: var(--space-3, 0.75rem);
+	color: var(--text-secondary, currentColor);
+	background: none;
 }
 
+/* A long description wraps within its column rather than pushing the date off. */
 .vc__desc {
-	font-weight: 600;
+	min-width: 0;
+	white-space: normal;
+	line-height: 1.3;
+}
+
+.vc__date {
+	text-align: end;
+	white-space: nowrap;
 }
 
 .vc__loc {
-	color: #555;
+	grid-column: 1 / -1;
+}
+/* Clips without a place: drop the empty row rather than leave its gap. */
+.vc__loc:empty {
+	display: none;
 }
 
 /* RULER ---------------------------------------------------------------------
@@ -143,21 +158,23 @@ video-carousel {
 	user-select: none;
 	-webkit-user-select: none;
 	/* No focus outline: the whole column is `align-self: stretch`, so an outline
-	   traces a distracting full-height box. Instead the ruler rests dimmed and
-	   returns to full opacity when active — that perceivable state change IS the
-	   visible focus indicator (WCAG 2.4.7). */
+	   traces a distracting full-height box. Instead the ticks rest dimmed and
+	   return to full strength when active — that perceivable state change IS the
+	   visible focus indicator (WCAG 2.4.7). The dim is a factor the TICKS multiply
+	   in (see .vc__tick), not the ruler's own opacity: the marker is the one accent
+	   on the ruler and must stay at full strength, and an opacity on the ruler
+	   would wash it out along with everything else. */
 	outline: none;
-	opacity: var(--vc-rest-opacity, 0.5);
-	transition: opacity 0.2s ease;
+	--vc-ruler-dim: var(--vc-rest-opacity, 0.5);
 }
 
-/* Brighten to full opacity when active. :focus-within is the keyboard-focus cue
+/* Brighten to full strength when active. :focus-within is the keyboard-focus cue
    (the ruler is the focusable node); :hover and .is-dragging make it equally
    discoverable for pointer users. */
 .vc__ruler:hover,
 .vc__ruler:focus-within,
 .vc__ruler.is-dragging {
-	opacity: 1;
+	--vc-ruler-dim: 1;
 }
 
 /* The scrolling tick strip. JS sets its transform (translateY); ticks are laid
@@ -183,8 +200,8 @@ video-carousel {
    settle, and a mid-fade settle simply snaps the strip to opaque instead of
    fighting. The marker fades with the strip so the pair arrives as one control.
 
-   Scoped inside the host, never on the ruler element: the ruler's opacity is
-   already the rest/active affordance (--vc-rest-opacity), which consumers
+   Scoped inside the host, never on the ruler element: the ruler's rest/active
+   affordance (--vc-rest-opacity → --vc-ruler-dim on the ticks) is what consumers
    override. And opacity only — the ruler's box height feeds publishMetrics() →
    --vc-bottom-ui-extent → the consumer's fold arithmetic. */
 @media (prefers-reduced-motion: no-preference) {
@@ -225,45 +242,67 @@ video-carousel {
 	display: block;
 	height: 1px;
 	width: var(--vc-tick-len, 12px);
-	background: var(--color-fg, #ededed);
-	opacity: var(--vc-tick-op, 1);
-	transition: width 0.14s ease, opacity 0.14s ease;
+	/* Hairlines in the quiet ink: the ruler is chrome, and the one lit thing on it
+	   is the accent marker. */
+	background: var(--text-tertiary, var(--color-fg, #8a8a8a));
+	/* Distance fade (JS) × the ruler's rest dim (above). */
+	opacity: calc(var(--vc-tick-op, 1) * var(--vc-ruler-dim, 1));
+	transition: width 0.14s ease, opacity 0.2s ease;
 }
 
-/* Year-boundary (January) ticks: longer and a touch bolder, carrying the year. */
+/* Year-boundary (January) ticks: longer and a step up in ink, carrying the year.
+   Still a hairline — rank is carried by length and tone, not weight. */
 .vc__tick--year {
 	width: var(--vc-tick-len, 22px);
-	height: 2px;
+	background: var(--text-secondary, var(--color-fg, #ededed));
 }
 
-/* Small year text to the left of a year tick. Set in the consumer's UI face when
-   there is one — these are read as instrument markings, not as prose — and falling
-   back to `inherit` keeps the package usable standalone, same as the --color-* and
+/* Small year text beside a year tick — an instrument marking, so it takes the
+   caps mono voice (tracked, tabular) in the dim ink. Falls back to a plain mono
+   stack so the package stays usable standalone, same as the --color-* and
    --space-* tokens it reads elsewhere. */
 .vc__tick-year {
-	font-family: var(--font-ui, inherit);
+	font-family: var(--font-mono, ui-monospace, monospace);
 	position: absolute;
 	right: calc(100% + var(--space-2, 0.5rem));
 	top: 50%;
 	transform: translateY(-50%);
-	font-size: 0.7rem;
+	font-size: 0.6875rem;
+	line-height: 1;
 	font-variant-numeric: tabular-nums;
-	letter-spacing: 0.04em;
-	color: var(--color-muted, #8a8a8a);
+	letter-spacing: var(--tracking-caps, 0.14em);
+	text-transform: uppercase;
+	color: var(--text-tertiary, var(--color-muted, #8a8a8a));
 	white-space: nowrap;
 }
 
-/* Fixed selection marker at the ruler's vertical center. */
+/* Fixed selection marker at the ruler's vertical center — the PLAYHEAD, and the
+   ruler's one accent: a 1px line the length of the longest tick with a small dot
+   at its free end (the design system's TickRuler playhead, turned on its side).
+   The dot is sized like that playhead's (0.75 of --space-2). */
 .vc__marker {
+	--vc-dot: calc(var(--space-2, 0.5rem) * 0.75);
 	position: absolute;
 	right: var(--vc-end-pad, 0.5rem);
 	top: 50%;
 	transform: translateY(-50%);
-	height: 2px;
+	height: 1px;
 	width: var(--vc-max-tick);
-	border-radius: 1px;
-	background: var(--color-accent, #0a84ff);
+	background: var(--accent, var(--color-accent, #e5482d));
 	pointer-events: none;
+}
+.vc__marker::before {
+	content: "";
+	position: absolute;
+	/* Free end: the tick baseline is the strip's right edge here, so the dot sits
+	   at the left (ruler-right and horizontal flip it below). */
+	left: 0;
+	top: 50%;
+	width: var(--vc-dot);
+	height: var(--vc-dot);
+	border-radius: 50%;
+	background: inherit;
+	transform: translate(-50%, -50%);
 }
 
 /* RULER-RIGHT MODIFIER -------------------------------------------------------
@@ -300,6 +339,11 @@ video-carousel {
 .vc--ruler-right .vc__ruler:not(.vc__ruler--horizontal) .vc__marker {
 	right: auto;
 	left: var(--vc-end-pad, 0.5rem);
+}
+.vc--ruler-right .vc__ruler:not(.vc__ruler--horizontal) .vc__marker::before {
+	left: auto;
+	right: 0;
+	transform: translate(50%, -50%);
 }
 
 /* HORIZONTAL MODIFIER (mobile) ----------------------------------------------
@@ -360,11 +404,11 @@ video-carousel {
 	width: 1px;
 	height: var(--vc-tick-len, 12px);
 	transform: translateX(-50%); /* center on its `left` position */
-	transition: height 0.14s ease, opacity 0.14s ease;
+	transition: height 0.14s ease, opacity 0.2s ease;
 }
 
 .vc__ruler--horizontal .vc__tick--year {
-	width: 2px;
+	width: 1px;
 	height: var(--vc-tick-len, 22px);
 }
 
@@ -391,9 +435,16 @@ video-carousel {
 	   alongside them. */
 	top: 0;
 	bottom: auto;
-	width: 2px;
+	width: 1px;
 	height: var(--vc-max-tick-h);
 	transform: translateX(-50%);
+}
+/* Free end of a hanging tick is its foot. */
+.vc__ruler--horizontal .vc__marker::before {
+	top: auto;
+	bottom: 0;
+	left: 50%;
+	transform: translate(-50%, 50%);
 }
 
 /* No-JS fallback: the authored per-clip buttons render as a plain stacked ruler
@@ -402,12 +453,12 @@ video-carousel {
 	position: relative;
 	display: block;
 	width: 20px;
-	height: 2px;
+	height: 1px;
 	margin: 0.75rem 0 0.75rem auto;
 	padding: 0;
 	border: 0;
-	border-radius: 1px;
-	background: var(--color-fg, #ededed);
+	border-radius: 0;
+	background: var(--text-tertiary, var(--color-fg, #ededed));
 	cursor: pointer;
 	appearance: none;
 	-webkit-appearance: none;
