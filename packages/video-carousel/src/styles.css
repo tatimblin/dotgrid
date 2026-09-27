@@ -201,11 +201,11 @@ video-carousel[caption-overlay] .vc__cap-run {
 	background: var(--text-primary, var(--color-fg, #111));
 	color: var(--color-bg, #fff);
 }
-/* The title is the caption's one accent: white caps on the accent box, like the
-   DS accent Pill. */
+/* The title is the caption's one accent: ink caps on the accent box, like the
+   DS accent Pill (--on-accent is the ink that clears AA on it; white does not). */
 video-carousel[caption-overlay] .vc__cap-run--title {
-	background: var(--accent, #e8491d);
-	color: var(--white, #fff);
+	background: var(--accent, #e5482d);
+	color: var(--on-accent, #111);
 }
 /* The second run — the place — steps down: the same hugging box, but in the
    page colour with the dim ink, so the title is the one inverted shape and the
