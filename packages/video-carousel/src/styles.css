@@ -201,7 +201,13 @@ video-carousel[caption-overlay] .vc__cap-run {
 	background: var(--text-primary, var(--color-fg, #111));
 	color: var(--color-bg, #fff);
 }
-/* The second run — date · place — steps down: the same hugging box, but in the
+/* The title is the caption's one accent: white caps on the accent box, like the
+   DS accent Pill. */
+video-carousel[caption-overlay] .vc__cap-run--title {
+	background: var(--accent, #e8491d);
+	color: var(--white, #fff);
+}
+/* The second run — the place — steps down: the same hugging box, but in the
    page colour with the dim ink, so the title is the one inverted shape and the
    meta reads as its quieter footnote. Over lit dots the box still cuts it a clean
    ground; over the empty floor it simply merges with the page. */
@@ -216,11 +222,9 @@ video-carousel[caption-overlay] .vc__cap-run > * {
 	color: inherit;
 	white-space: normal;
 }
-/* Date · place on one run, the dot only when there is a place to separate. The
-   fields are adjacent spans with no whitespace between them, hence the leading
-   no-break space. */
-video-carousel[caption-overlay] .vc__loc:not(:empty)::before {
-	content: "\00a0· ";
+/* No place, no second run: an empty run would still paint its padded box. */
+video-carousel[caption-overlay] .vc__cap-line:has(.vc__loc:empty) {
+	display: none;
 }
 
 /* RULER ---------------------------------------------------------------------
