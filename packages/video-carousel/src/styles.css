@@ -4,6 +4,41 @@
    thing stacks and the ruler becomes a horizontal strip below the card (see the
    orientation logic in index.ts + the horizontal modifier further down). The
    markup degrades to a readable block before JS upgrades it. */
+/* RULER GEOMETRY — declared at the ROOT, and this is the package's one global
+   footprint. Custom properties inherit downward only, so a knob declared on
+   the host would be invisible to a layout ABOVE the host that has to reserve
+   the ruler's room (a grid cell the ruler protrudes out of, `fill` below): at
+   the root, the host, its internals and that layout all read one number.
+   Override a knob here — on :root, or on any ancestor of both the host and
+   the layout that reserves for it — never restate the total. Everything
+   else the host owns stays on the host. */
+:root {
+	--vc-max-tick: var(--space-6, 32px); /* longest (year) tick — vertical ruler width driver */
+	--vc-max-tick-h: var(--space-5, 24px); /* horizontal strip: tick growth extent (mobile) */
+	--vc-date-gutter: 4.5rem;
+	--vc-end-pad: var(--space-2, 0.5rem);
+	/* The gap between the ruler and the stage in the row (.vc__main). */
+	--vc-main-gap: var(--space-4, 1rem);
+	/* Total ruler width (date-label gutter + longest tick + end pad): what a
+	   consumer reserves when the ruler sits OUTSIDE a bounded layout (e.g.
+	   `ruler-side="right"` protruding past a grid column). */
+	--vc-ruler-w: calc(
+		var(--vc-date-gutter) + var(--vc-max-tick) + var(--vc-end-pad)
+	);
+	/* Total height of the HORIZONTAL ruler strip: the tick growth extent, plus the gap
+	   below a tick, plus the year-label row beneath it — what a consumer that overlays
+	   the ruler on a scene reserves above it.
+	   Composed from the REAL parts (rather than the old "+ 1.1rem" allowance, which was
+	   ~5px short of the label's line box and let `overflow: hidden` shave the year
+	   digits): --vc-tick-year-gap is the label's `top` offset past the tick and
+	   --vc-tick-year-h its line box at the label step over the UI leading. */
+	--vc-tick-year-gap: var(--space-1, 0.25rem);
+	--vc-tick-year-h: calc(var(--font-size-0, 0.75rem) * var(--line-height-ui, 1.3));
+	--vc-ruler-h: calc(
+		var(--vc-max-tick-h) + var(--vc-tick-year-gap) + var(--vc-tick-year-h)
+	);
+}
+
 video-carousel {
 	display: flex;
 	flex-direction: column;
@@ -12,56 +47,26 @@ video-carousel {
 	   ratio so the video stays 9:16 and never gets absurdly tall. */
 	--vc-cap: min(72vh, 34rem);
 	--vc-card-w: calc(var(--vc-cap) * 960 / 1706);
-	/* RULER GEOMETRY KNOBS. Declared on the HOST, not on .vc__ruler, because the
-	   --vc-ruler-w/-h totals below are also computed here: custom properties inherit
-	   downward only, so a knob declared on the descendant would be invisible to a calc
-	   on the host and the total would silently resolve against its own fallback. Host
-	   is also the right override point for a consumer (one place, before the internals
-	   read it). .vc__ruler and its children consume these by inheritance. */
-	--vc-max-tick: 32px; /* longest (year) tick — vertical ruler width driver */
-	--vc-max-tick-h: 24px; /* horizontal strip: tick growth extent (mobile) */
-	--vc-date-gutter: 4.5rem;
-	--vc-end-pad: var(--space-2, 0.5rem);
-	/* Total ruler width (date-label gutter + longest tick + end pad). Hoisted so a
-	   consumer can reserve the same amount of gutter space when the ruler sits OUTSIDE
-	   a bounded layout (e.g. `ruler-side="right"` protruding past a grid column). */
-	--vc-ruler-w: calc(
-		var(--vc-date-gutter) + var(--vc-max-tick) + var(--vc-end-pad)
-	);
-	/* Total height of the HORIZONTAL ruler strip: the tick growth extent, plus the gap
-	   below a tick, plus the year-label row beneath it. Hoisted for the same reason as
-	   --vc-ruler-w — a consumer that overlays the ruler on a scene needs to reserve this
-	   much room above it, and should never restate the number.
-	   Composed from the REAL parts (rather than the old "+ 1.1rem" allowance, which was
-	   ~5px short of the label's line box and let `overflow: hidden` shave the year
-	   digits): --vc-tick-year-gap is the label's `top` offset past the tick and
-	   --vc-tick-year-h its line box at 0.7rem/normal. */
-	--vc-tick-year-gap: var(--space-1, 0.25rem);
-	--vc-tick-year-h: 1.1rem;
-	--vc-ruler-h: calc(
-		var(--vc-max-tick-h) + var(--vc-tick-year-gap) + var(--vc-tick-year-h)
-	);
 	/* How much of the host's bottom edge the overlay UI (ruler ∪ caption) occupies.
 	   JS republishes the MEASURED value (see publishMetrics); this CSS default is the
 	   pre-JS/first-paint value, derived from the ruler geometry so it is never a
 	   magic number. Only meaningful when a consumer bottom-anchors that UI. */
 	--vc-bottom-ui-extent: var(--vc-ruler-h);
-	/* The caption's measured height, for a consumer that STACKS against it (the hero
-	   lifts the ruler by exactly this much to sit above the caption). JS republishes
+	/* The caption's measured height, for a consumer that STACKS against it (	   the hero lifts the ruler by exactly this much to sit above the caption). JS republishes
 	   the real value — including wraps, which change per clip and per width; this is
 	   the single-line first-paint estimate, composed from the caption's own type
-	   rather than guessed: the caption's 0.75rem over the inherited body line-height
-	   (--line-height-base, 1.6), which is exactly the 19.2px it measures at. The
-	   literal is restated here because this package is consumed standalone, without
-	   the DS token layer — the same fallback convention as the motion tokens below. */
-	--vc-caption-h: calc(0.75rem * 1.6);
+	   rather than guessed: the label step over the body leading it inherits. The
+	   fallbacks are the literals the tokens resolve to, because this package is
+	   consumed standalone, without the DS token layer — the same convention as
+	   every other token this file reads. */
+	--vc-caption-h: calc(var(--font-size-0, 0.75rem) * var(--line-height-body, 1.6));
 }
 
 /* Ruler + card share a row; align-items:stretch makes the ruler track the card
    height. justify-content:flex-end hugs the pair to the right (page) edge. */
 .vc__main {
 	display: flex;
-	gap: var(--space-4, 1rem);
+	gap: var(--vc-main-gap);
 	align-items: stretch;
 	justify-content: flex-end;
 	width: 100%;
@@ -79,12 +84,13 @@ video-carousel {
 	max-width: var(--vc-card-w);
 	display: flex;
 	flex-direction: column;
-	border-radius: 0;
+	/* Square by default; a consumer rounds it to its own frame's corner. */
+	border-radius: var(--vc-stage-radius, 0);
 	overflow: hidden;
 	background: var(--color-bg, #fff);
 	/* Must stay in step with SWAP_MS in index.ts, which times how long the dip
 	   is held. Fallback for standalone use (see .vc__strip.is-settling). */
-	transition: opacity var(--duration-swap, 0.26s) ease;
+	transition: opacity var(--duration-swap, 0.26s) var(--ease-reveal, ease);
 }
 
 /* Momentary dip while the clip's src swaps (toggled from JS). */
@@ -98,6 +104,33 @@ video-carousel {
 	aspect-ratio: 960 / 1706;
 }
 
+/* FILL (`fill` on the host) ---------------------------------------------------
+   The host has been GIVEN a box — a grid cell with a definite height — and the
+   clip is the whole of it: the stage takes the host's full width and height
+   rather than its 9:16 box at the top, and the grid cover-maps the clip into
+   it (<dotted-grid>'s coverUv: scale to fill, never stretch), so only the
+   clip's sides are trimmed. With `ruler-side="right"` the ruler and its gap
+   OVERHANG the host's edge instead of taking a share of the cell — the
+   consumer reserves --vc-ruler-w + --vc-main-gap outside the host for it
+   (the widget grid's gutter). The attribute, not the JS-toggled class, so the
+   first paint is already the filled one. */
+video-carousel[fill] .vc__main {
+	flex: 1 1 auto;
+	min-height: 0;
+}
+video-carousel[fill][ruler-side="right"] .vc__main {
+	width: calc(100% + var(--vc-ruler-w) + var(--vc-main-gap));
+}
+video-carousel[fill] .vc__stage {
+	max-width: none;
+	width: 100%;
+}
+video-carousel[fill] .vc__grid {
+	flex: 1 1 auto;
+	min-height: 0;
+	aspect-ratio: auto;
+}
+
 /* Caption beneath the video, in the instrument voices rather than on a panel: no
    box, just type on the page. What the clip is (.vc__desc, a caps label in the
    ink) leads, and the place (.vc__loc) reads under it in the dim sentence-case
@@ -106,7 +139,7 @@ video-carousel {
    rules here only stack them, and fall back to a plain mono stack standalone. */
 .vc__caption {
 	font-family: var(--voice-mono-family, ui-monospace, monospace);
-	font-size: 0.75rem;
+	font-size: var(--voice-mono-size, 0.75rem);
 	display: grid;
 	row-gap: var(--space-2, 0.5rem);
 	padding-block-start: var(--space-3, 0.75rem);
@@ -118,7 +151,7 @@ video-carousel {
 .vc__desc {
 	min-width: 0;
 	white-space: normal;
-	line-height: 1.3;
+	line-height: var(--line-height-ui, 1.3);
 }
 
 /* Clips without a place: drop the empty row rather than leave its gap. */
@@ -173,7 +206,7 @@ video-carousel[caption-overlay] .vc__caption {
 	/* One size for the whole caption, which the fields inherit (below): the pitch
 	   in --vc-cap-lh is in em, and it only closes the gap if that em is the same
 	   one the highlighted text is set in. */
-	font-size: var(--widget-font-xs, var(--font-size-0, 0.75rem));
+		font-size: var(--voice-mono-size, 0.75rem);
 	pointer-events: none;
 }
 video-carousel[caption-overlay] .vc__cap-line {
@@ -325,51 +358,54 @@ video-carousel[caption-overlay] .vc__cap-line:has(.vc__loc:empty) {
 	width: var(--vc-tick-len, 12px);
 	/* Hairlines in the quiet ink: the ruler is chrome, and the one lit thing on it
 	   is the accent marker. */
-	background: var(--text-tertiary, var(--color-fg, #8a8a8a));
+		background: var(--text-tertiary, #8a8a8a);
 	/* Distance fade (JS) × the ruler's rest dim (above). */
 	opacity: calc(var(--vc-tick-op, 1) * var(--vc-ruler-dim, 1));
-	transition: width 0.14s ease, opacity 0.2s ease;
+	/* The magnification is a micro-transition: felt, not watched. */
+	transition:
+		width var(--duration-quick, 0.14s) var(--ease-reveal, ease),
+		opacity var(--duration-quick, 0.14s) var(--ease-reveal, ease);
 }
 
 /* Year-boundary (January) ticks: longer and a step up in ink, carrying the year.
    Still a hairline — rank is carried by length and tone, not weight. */
 .vc__tick--year {
 	width: var(--vc-tick-len, 22px);
-	background: var(--text-secondary, var(--color-fg, #ededed));
+	background: var(--text-secondary, #bdbdbd);
 }
 
 /* Small year text beside a year tick — an instrument marking, so it takes the
-   caps label voice (tracked, tabular) in the dim ink. Falls back to a plain mono
-   stack so the package stays usable standalone, same as the --color-* and
-   --space-* tokens it reads elsewhere. */
+   caps label voice (the --voice-mono-* tokens: the UI face at the label step,
+   tracked, tabular) in the dim ink. Falls back to a plain mono stack so the
+   package stays usable standalone, same as every token it reads. */
 .vc__tick-year {
 	font-family: var(--voice-mono-family, ui-monospace, monospace);
 	position: absolute;
 	right: calc(100% + var(--space-2, 0.5rem));
 	top: 50%;
 	transform: translateY(-50%);
-	font-size: 0.6875rem;
+	font-size: var(--voice-mono-size, 0.6875rem);
 	line-height: 1;
 	font-variant-numeric: tabular-nums;
 	letter-spacing: var(--tracking-caps, 0.14em);
 	text-transform: uppercase;
-	color: var(--text-tertiary, var(--color-muted, #8a8a8a));
+	color: var(--text-tertiary, #8a8a8a);
 	white-space: nowrap;
 }
 
 /* Fixed selection marker at the ruler's vertical center — the PLAYHEAD, and the
    ruler's one accent: a 1px line the length of the longest tick with a small dot
-   at its free end (the design system's TickRuler playhead, turned on its side).
-   The dot is sized like that playhead's (0.75 of --space-2). */
+   at its free end (the design system's playhead, turned on its side; the dot is
+   its --playhead-dot). */
 .vc__marker {
-	--vc-dot: calc(var(--space-2, 0.5rem) * 0.75);
+	--vc-dot: var(--playhead-dot, calc(var(--space-2, 0.5rem) * 0.75));
 	position: absolute;
 	right: var(--vc-end-pad, 0.5rem);
 	top: 50%;
 	transform: translateY(-50%);
 	height: 1px;
 	width: var(--vc-max-tick);
-	background: var(--accent, var(--color-accent, #e5482d));
+	background: var(--accent, #e5482d);
 	pointer-events: none;
 }
 .vc__marker::before {
@@ -485,7 +521,9 @@ video-carousel[caption-overlay] .vc__cap-line:has(.vc__loc:empty) {
 	width: 1px;
 	height: var(--vc-tick-len, 12px);
 	transform: translateX(-50%); /* center on its `left` position */
-	transition: height 0.14s ease, opacity 0.2s ease;
+	transition:
+		height var(--duration-quick, 0.14s) var(--ease-reveal, ease),
+		opacity var(--duration-quick, 0.14s) var(--ease-reveal, ease);
 }
 
 .vc__ruler--horizontal .vc__tick--year {
@@ -533,13 +571,13 @@ video-carousel[caption-overlay] .vc__cap-line:has(.vc__loc:empty) {
 .vc__tick--major {
 	position: relative;
 	display: block;
-	width: 20px;
+	width: var(--space-5, 24px);
 	height: 1px;
-	margin: 0.75rem 0 0.75rem auto;
+	margin: var(--space-3, 0.75rem) 0 var(--space-3, 0.75rem) auto;
 	padding: 0;
 	border: 0;
 	border-radius: 0;
-	background: var(--text-tertiary, var(--color-fg, #ededed));
+	background: var(--text-tertiary, #8a8a8a);
 	cursor: pointer;
 	appearance: none;
 	-webkit-appearance: none;
