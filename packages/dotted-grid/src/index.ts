@@ -197,7 +197,7 @@ const TRAIL_MS = 600; // trail lifetime — longer than fade-in so dots trail ou
  * prefers-reduced-motion, matching the animation gating. So is `intro` — a
  * develop-in is decorative, so that visitor gets the finished image immediately.
  *
- * Lifecycle mirrors the other packages (gallery-carousel): a `listeners`
+ * Lifecycle mirrors the other packages (video-carousel): a `listeners`
  * cleanup array, a `rafId` guard, a `ResizeObserver`, and reduced-motion
  * handling. Teardown is thorough because Layout.astro uses ClientRouter (view
  * transitions), so elements disconnect/reconnect on navigation and the GL

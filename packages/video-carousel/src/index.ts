@@ -82,7 +82,7 @@ interface Clip {
  * replaces them with the generated scrolling strip, and drives the
  * `<dotted-grid data-vc-grid>` + caption from the selection.
  *
- * Lifecycle mirrors the sibling packages (gallery-carousel / dotted-grid): a
+ * Lifecycle mirrors the sibling packages (dotted-grid): a
  * `listeners` cleanup array, a `rafId` guard, a `ResizeObserver`, reduced-motion
  * handling, and thorough teardown (Layout uses ClientRouter view transitions).
  */
