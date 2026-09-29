@@ -73,6 +73,7 @@ video-carousel {
    cap; height grows to video + caption. */
 .vc__stage {
 	position: relative;
+	margin: 0; /* a <figure>: the UA indents it */
 	flex: 1 1 auto;
 	min-width: 0;
 	max-width: var(--vc-card-w);
