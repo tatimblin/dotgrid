@@ -98,13 +98,13 @@ video-carousel {
 }
 
 /* Caption beneath the video, in the instrument voices rather than on a panel: no
-   box, just type on the page. What the clip is (.vc__desc, a caps mono label in the
-   ink) leads, and the place (.vc__loc) reads under it in the dim sentence-case mono
-   (no date — the ruler already says when). The consumer renders the two fields
-   (VideoCarousel.astro sets them as design-system Mono voices); the rules here only
-   stack them, and fall back to a plain mono stack standalone. */
+   box, just type on the page. What the clip is (.vc__desc, a caps label in the
+   ink) leads, and the place (.vc__loc) reads under it in the dim sentence-case
+   label voice (no date — the ruler already says when). The consumer renders the
+   two fields (VideoCarousel.astro sets them as design-system Mono voices); the
+   rules here only stack them, and fall back to a plain mono stack standalone. */
 .vc__caption {
-	font-family: var(--font-mono, ui-monospace, monospace);
+	font-family: var(--voice-mono-family, ui-monospace, monospace);
 	font-size: 0.75rem;
 	display: grid;
 	row-gap: var(--space-2, 0.5rem);
@@ -338,11 +338,11 @@ video-carousel[caption-overlay] .vc__cap-line:has(.vc__loc:empty) {
 }
 
 /* Small year text beside a year tick — an instrument marking, so it takes the
-   caps mono voice (tracked, tabular) in the dim ink. Falls back to a plain mono
+   caps label voice (tracked, tabular) in the dim ink. Falls back to a plain mono
    stack so the package stays usable standalone, same as the --color-* and
    --space-* tokens it reads elsewhere. */
 .vc__tick-year {
-	font-family: var(--font-mono, ui-monospace, monospace);
+	font-family: var(--voice-mono-family, ui-monospace, monospace);
 	position: absolute;
 	right: calc(100% + var(--space-2, 0.5rem));
 	top: 50%;
