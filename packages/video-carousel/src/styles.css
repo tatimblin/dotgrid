@@ -131,6 +131,106 @@ video-carousel[fill] .vc__grid {
 	aspect-ratio: auto;
 }
 
+/* SCENE (`scene` on the host) --------------------------------------------------
+   The carousel as a full-bleed BACKGROUND: the host fills the box it is given,
+   the clip cover-fills it, and the overlay UI stacks along the bottom edge —
+   the clip, dissolving out across the ruler's tick band; the year row on clean
+   page background past it; the caption last. Pair with `orientation="horizontal"`.
+   The consumer gates `display` (which breakpoints show the scene) and nothing
+   else. ONE mask, on the clip alone: a mask applies to its whole subtree, so one
+   on .vc__main would drag the ruler and caption into the fade, and a second
+   gradient on the ruler would resolve its 100% against a ~46px strip instead of
+   the scene and read as a second fade-out. */
+video-carousel[scene] {
+	position: absolute;
+	inset: 0;
+	/* The foot's inset from the bottom edge, and the gap between the year row and
+	   the caption below it. */
+	--hero-vc-foot: var(--space-5, 24px);
+	--hero-vc-cap-gap: var(--space-4, 16px);
+	/* The dissolve is EXACTLY the tick growth extent, so it is spent by the year
+	   row: the ticks stand inside it, the labels sit past it, and a taller band
+	   eats the type. */
+	--hero-vc-dissolve: var(--vc-max-tick-h);
+	/* Bottom edge → the ruler's top, where the dissolve begins. Composed from the
+	   MEASURED caption height (it rewraps per clip and per width) and the strip's
+	   real height, so the three bands cannot drift apart. */
+	--hero-vc-ruler-top: calc(
+		var(--hero-vc-foot) + var(--vc-caption-h) + var(--hero-vc-cap-gap) +
+			var(--vc-ruler-h)
+	);
+}
+video-carousel[scene] .vc__main {
+	position: absolute;
+	inset: 0;
+	width: 100%;
+	display: block;
+	-webkit-mask-image: none;
+	mask-image: none;
+}
+video-carousel[scene] .vc__stage {
+	position: absolute;
+	inset: 0;
+	max-width: none;
+	width: 100%;
+	background: none;
+}
+/* The clip: faded at the top into the page (the scene's own edge fade is off,
+   since it would mask the UI too) and dissolved across the tick band. Held at
+   0.55 so type stays legible over it; the overlay UI keeps its own rest opacity. */
+video-carousel[scene] .vc__grid {
+	width: 100%;
+	height: 100%;
+	aspect-ratio: auto;
+	opacity: 0.55;
+	-webkit-mask-image: linear-gradient(
+		to bottom,
+		transparent 0,
+		#000 12%,
+		#000 calc(100% - var(--hero-vc-ruler-top)),
+		transparent calc(100% - var(--hero-vc-ruler-top) + var(--hero-vc-dissolve))
+	);
+	mask-image: linear-gradient(
+		to bottom,
+		transparent 0,
+		#000 12%,
+		#000 calc(100% - var(--hero-vc-ruler-top)),
+		transparent calc(100% - var(--hero-vc-ruler-top) + var(--hero-vc-dissolve))
+	);
+}
+/* The ruler, lifted above the caption by its measured height. No mask and no
+   background of its own (a wash here read as a second fade — any one
+   reintroduced must be feathered at BOTH edges). padding-inline only: the ticks
+   and labels are positioned against the padding box, so block padding would
+   clip the year digits against `overflow: hidden` rather than inset them. */
+video-carousel[scene] .vc__ruler {
+	position: absolute;
+	left: 0;
+	right: 0;
+	bottom: calc(var(--hero-vc-foot) + var(--vc-caption-h) + var(--hero-vc-cap-gap));
+	z-index: 2;
+	-webkit-mask-image: none;
+	mask-image: none;
+	background: none;
+	padding-inline: var(--space-4, 16px);
+}
+/* The caption, dimmed to the ruler's rest opacity so the pair reads as one quiet
+   band of video chrome, not as another line of the page's copy above it. */
+video-carousel[scene] .vc__caption {
+	position: absolute;
+	left: var(--space-4, 16px);
+	right: var(--space-4, 16px);
+	bottom: var(--hero-vc-foot);
+	z-index: 1;
+	padding: 0;
+	background: none;
+	color: var(--text-primary, currentColor);
+	opacity: var(--vc-rest-opacity, 0.5);
+}
+video-carousel[scene] .vc__loc {
+	color: var(--text-secondary, currentColor);
+}
+
 /* Caption beneath the video, in the instrument voices rather than on a panel: no
    box, just type on the page. What the clip is (.vc__desc, a caps label in the
    ink) leads, and the place (.vc__loc) reads under it in the dim sentence-case
