@@ -159,6 +159,9 @@ video-carousel[scene] {
 		var(--hero-vc-foot) + var(--vc-caption-h) + var(--hero-vc-cap-gap) +
 			var(--vc-ruler-h)
 	);
+	/* Bottom edge → where the clip's dissolve begins: the ruler's top, so the
+	   ticks emerge out of it. */
+	--hero-vc-fade-start: var(--hero-vc-ruler-top);
 }
 video-carousel[scene] .vc__main {
 	position: absolute;
@@ -187,15 +190,15 @@ video-carousel[scene] .vc__grid {
 		to bottom,
 		transparent 0,
 		#000 12%,
-		#000 calc(100% - var(--hero-vc-ruler-top)),
-		transparent calc(100% - var(--hero-vc-ruler-top) + var(--hero-vc-dissolve))
+		#000 calc(100% - var(--hero-vc-fade-start)),
+		transparent calc(100% - var(--hero-vc-fade-start) + var(--hero-vc-dissolve))
 	);
 	mask-image: linear-gradient(
 		to bottom,
 		transparent 0,
 		#000 12%,
-		#000 calc(100% - var(--hero-vc-ruler-top)),
-		transparent calc(100% - var(--hero-vc-ruler-top) + var(--hero-vc-dissolve))
+		#000 calc(100% - var(--hero-vc-fade-start)),
+		transparent calc(100% - var(--hero-vc-fade-start) + var(--hero-vc-dissolve))
 	);
 }
 /* The ruler, lifted above the caption by its measured height. No mask and no
@@ -229,6 +232,28 @@ video-carousel[scene] .vc__caption {
 }
 video-carousel[scene] .vc__loc {
 	color: var(--text-secondary, currentColor);
+}
+
+/* SCENE, BASELINE DOWN (`scene` + `ruler-baseline="bottom"`). The order turned
+   over: the ruler sits ON the bottom edge, its ticks standing from it, and the
+   caption rides inside the clip above the year row. The clip runs to the very
+   bottom, under the strip, and its dissolve is long: it starts a lead-in above
+   the caption and is spent only at the edge, so the caption reads over a halftone
+   already well down and the ticks stand in its last trace. */
+video-carousel[scene][ruler-baseline="bottom"] {
+	--hero-vc-ruler-top: var(--vc-ruler-h);
+	--hero-vc-fade-lead: var(--space-11, 80px);
+	--hero-vc-fade-start: calc(
+		var(--vc-ruler-h) + var(--hero-vc-cap-gap) + var(--vc-caption-h) +
+			var(--hero-vc-fade-lead)
+	);
+	--hero-vc-dissolve: var(--hero-vc-fade-start);
+}
+video-carousel[scene][ruler-baseline="bottom"] .vc__ruler {
+	bottom: 0;
+}
+video-carousel[scene][ruler-baseline="bottom"] .vc__caption {
+	bottom: calc(var(--vc-ruler-h) + var(--hero-vc-cap-gap));
 }
 
 /* Caption beneath the video, in the instrument voices rather than on a panel: no
@@ -664,6 +689,26 @@ video-carousel[caption-overlay] .vc__cap-line:has(.vc__loc:empty) {
 	bottom: 0;
 	left: 50%;
 	transform: translate(-50%, 50%);
+}
+
+/* BASELINE-DOWN (`ruler-baseline="bottom"` on the host): the horizontal strip
+   turned over, for a ruler standing ON an edge rather than hanging under a clip.
+   Ticks stand from the BOTTOM edge and grow upward, the years read above them,
+   and the playhead's dot rides the free end at the top. Labels still measure
+   from the shared growth extent, so the row stays level as ticks magnify. */
+video-carousel[ruler-baseline="bottom"] .vc__ruler--horizontal .vc__tick,
+video-carousel[ruler-baseline="bottom"] .vc__ruler--horizontal .vc__marker {
+	top: auto;
+	bottom: 0;
+}
+video-carousel[ruler-baseline="bottom"] .vc__ruler--horizontal .vc__tick-year {
+	top: auto;
+	bottom: calc(var(--vc-max-tick-h) + var(--vc-tick-year-gap));
+}
+video-carousel[ruler-baseline="bottom"] .vc__ruler--horizontal .vc__marker::before {
+	top: 0;
+	bottom: auto;
+	transform: translate(-50%, -50%);
 }
 
 /* No-JS fallback: the authored per-clip buttons render as a plain stacked ruler
