@@ -659,6 +659,9 @@ export class VideoCarouselElement extends HTMLElement {
 			const link = document.createElement("link");
 			link.rel = "prefetch";
 			link.as = "video";
+			// Match <dotted-grid>'s anonymous-CORS video request, so the cached
+			// prefetch is reusable when the media is cross-origin.
+			link.crossOrigin = "anonymous";
 			document.head.appendChild(link);
 			this.prefetchLink = link;
 			this.listeners.push(() => {

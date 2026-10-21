@@ -1,6 +1,6 @@
 {
   "name": "@tristimb/dotted-grid",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "A WebGL2 halftone custom element: renders a video as an animated dot grid, themed with CSS custom properties.",
   "license": "MIT",
   "author": "Tristan Timblin",
