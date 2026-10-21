@@ -1,0 +1,21 @@
+{
+  "name": "dotgrid",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*",
+    "demo"
+  ],
+  "scripts": {
+    "build": "bun run --filter '@tristimb/*' build",
+    "test": "bun test ./packages",
+    "typecheck": "bun run --filter '@tristimb/*' typecheck",
+    "demo": "bun run --cwd demo dev",
+    "demo:build": "bun run build && bun run --cwd demo build",
+    "pack": "mkdir -p release && cd packages/dotted-grid && npm pack --pack-destination ../../release && cd ../video-carousel && npm pack --pack-destination ../../release"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.2.18",
+    "typescript": "5.9.3"
+  }
+}

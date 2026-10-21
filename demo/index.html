@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<title>dotgrid demo</title>
+		<link rel="stylesheet" href="./src/demo.css" />
+	</head>
+	<body>
+		<header class="bar">
+			<strong>&lt;dotted-grid&gt;</strong>
+			<button type="button" data-theme-toggle>Toggle theme</button>
+		</header>
+
+		<main>
+			<section class="demo">
+				<h2>Hero: tone from CSS variables</h2>
+				<p>
+					This grid sets no tone attributes, so it takes its look from the
+					<code>--dg-*</code> variables in <code>demo.css</code>, one preset per theme.
+					Toggle the theme to watch it re-resolve.
+				</p>
+				<dotted-grid
+					class="hero"
+					src="./videos/fabric.web.mp4"
+					src-webm="./videos/fabric.web.webm"
+					cell-size="6"
+					color-reveal
+					shimmer="4"
+					intro
+				></dotted-grid>
+			</section>
+
+			<section class="demo">
+				<h2>Attributes beat variables</h2>
+				<p>
+					The sliders write attributes on this element. An attribute always wins over
+					its <code>--dg-*</code> variable, which wins over the default.
+				</p>
+				<div class="knobs" data-knobs>
+					<label>cell-size <input type="range" data-attr="cell-size" min="3" max="20" step="1" value="8" /></label>
+					<label>gamma <input type="range" data-attr="gamma" min="0.2" max="2" step="0.05" value="0.8" /></label>
+					<label>cutoff <input type="range" data-attr="cutoff" min="0" max="0.8" step="0.05" value="0" /></label>
+					<label>bloom <input type="range" data-attr="bloom" min="0" max="1" step="0.05" value="0.55" /></label>
+					<label>
+						dot-shape
+						<select data-attr="dot-shape">
+							<option>morph</option>
+							<option>circle</option>
+							<option>square</option>
+						</select>
+					</label>
+					<label>
+						polarity
+						<select data-attr="polarity">
+							<option>positive</option>
+							<option>negative</option>
+						</select>
+					</label>
+				</div>
+				<dotted-grid
+					class="tuned"
+					data-tuned
+					src="./videos/fabric.web.mp4"
+					src-webm="./videos/fabric.web.webm"
+					cell-size="8"
+				></dotted-grid>
+			</section>
+
+			<section class="demo">
+				<h2>&lt;video-carousel&gt;</h2>
+				<p>
+					The carousel drives one <code>&lt;dotted-grid&gt;</code> through a list of clips
+					authored as ruler ticks. Drag the ruler, click a tick or use the arrow keys.
+				</p>
+				<video-carousel class="vc carousel">
+					<div class="vc__main">
+						<div class="vc__ruler" role="group" data-vc-ruler aria-label="Select clip by date">
+							<button
+								type="button"
+								class="vc__tick vc__tick--major"
+								data-index="0"
+								data-src="./videos/fabric.web.mp4"
+								data-src-webm="./videos/fabric.web.webm"
+								data-desc="Fabric"
+								data-loc="Upright"
+								data-date="January 2024"
+								data-alt="Halftone clip of fabric"
+								aria-label="Fabric, upright, January 2024"
+							></button>
+							<button
+								type="button"
+								class="vc__tick vc__tick--major"
+								data-index="1"
+								data-src="./videos/fabric-flip.web.mp4"
+								data-src-webm="./videos/fabric-flip.web.webm"
+								data-desc="Fabric, flipped"
+								data-loc="Upside down"
+								data-date="September 2024"
+								data-alt="Halftone clip of fabric, flipped"
+								aria-label="Fabric, flipped, September 2024"
+							></button>
+						</div>
+						<figure class="vc__stage" data-vc-stage>
+							<dotted-grid
+								class="vc__grid"
+								data-vc-grid
+								src="./videos/fabric.web.mp4"
+								src-webm="./videos/fabric.web.webm"
+								color-reveal
+								shimmer="1"
+								no-loop
+								cell-size="7"
+								xfade
+								xfade-mode="threshold"
+							></dotted-grid>
+							<figcaption class="vc__caption">
+								<span class="vc__cap-line">
+									<span class="vc__cap-run vc__cap-run--title"><span class="vc__desc" data-vc-desc>Fabric</span></span>
+								</span>
+								<span class="vc__cap-line">
+									<span class="vc__cap-run vc__cap-run--meta"><span class="vc__loc" data-vc-loc>Upright</span></span>
+								</span>
+							</figcaption>
+						</figure>
+					</div>
+				</video-carousel>
+			</section>
+		</main>
+
+		<script type="module" src="./src/main.ts"></script>
+	</body>
+</html>

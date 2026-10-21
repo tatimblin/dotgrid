@@ -1,11 +1,43 @@
 {
-  "name": "@whois/video-carousel",
-  "version": "0.0.1",
-  "private": true,
-  "type": "module",
-  "exports": {
-    ".": "./src/index.ts",
-    "./styles.css": "./src/styles.css"
+  "name": "@tristimb/video-carousel",
+  "version": "0.1.0",
+  "description": "A custom element that autoplays a list of clips through one <dotted-grid> halftone, with a date ruler that doubles as a scrubber.",
+  "license": "MIT",
+  "author": "Tristan Timblin",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tatimblin/dotgrid.git",
+    "directory": "packages/video-carousel"
   },
-  "files": ["src"]
+  "type": "module",
+  "sideEffects": [
+    "./dist/index.js",
+    "./dist/styles.css"
+  ],
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./styles.css": "./dist/styles.css",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "rm -rf dist && bun build ./src/index.ts --outdir dist --target browser --format esm && tsc -p tsconfig.build.json && cp src/styles.css dist/styles.css",
+    "typecheck": "tsc -p tsconfig.build.json --noEmit",
+    "prepack": "bun run build"
+  },
+  "keywords": [
+    "carousel",
+    "halftone",
+    "custom-element",
+    "web-component",
+    "video"
+  ]
 }

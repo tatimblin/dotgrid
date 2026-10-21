@@ -1,10 +1,10 @@
-import { test, expect } from "@playwright/test";
+import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 
 /**
  * SHADER SOURCE HAZARDS.
  *
- * The GLSL in packages/dotted-grid (src/shader.ts) lives inside a JS template literal, which makes
+ * The GLSL in shader.ts lives inside a JS template literal, which makes
  * two ordinary-looking edits break the build in ways the symptom does not point at:
  *
  *   1. A BACKTICK anywhere in that string — including inside a `// comment`, which
@@ -21,21 +21,21 @@ import { readFileSync } from "node:fs";
  * both before the module is ever served.
  */
 
-const SRC = "packages/dotted-grid/src/shader.ts";
+const SRC = new URL("./shader.ts", import.meta.url);
 const OPEN = "export const FRAGMENT_SHADER = `";
 
 /** Extract the fragment-shader template literal's contents. */
 function shaderSource(): string {
 	const file = readFileSync(SRC, "utf8");
 	const open = file.indexOf(OPEN);
-	expect(open, `could not find the fragment shader in ${SRC}`).toBeGreaterThan(-1);
+	expect(open, `could not find the fragment shader in shader.ts`).toBeGreaterThan(-1);
 	const start = open + OPEN.length;
 	const end = file.indexOf("`;", start);
 	expect(end, "fragment shader literal is unterminated").toBeGreaterThan(start);
 	return file.slice(start, end);
 }
 
-test.describe("dotted-grid shader source", () => {
+describe("dotted-grid shader source", () => {
 	test("contains no backticks (they would end the template literal)", () => {
 		const offenders = shaderSource()
 			.split("\n")

@@ -1,0 +1,93 @@
+/* The page's own palette. <dotted-grid> falls back to --color-fg / --color-bg
+   for its ink and paper when no --dg-ink / --dg-paper is set. */
+:root {
+	color-scheme: dark;
+	--color-fg: #f2efe6;
+	--color-bg: #111110;
+	--text-primary: var(--color-fg);
+	--text-secondary: #b9b5aa;
+	--text-tertiary: #8a867c;
+	font-family: ui-sans-serif, system-ui, sans-serif;
+}
+[data-theme="light"] {
+	color-scheme: light;
+	--color-fg: #191918;
+	--color-bg: #fff8eb;
+	--text-secondary: #4d4a44;
+	--text-tertiary: #77736b;
+}
+
+body {
+	margin: 0;
+	color: var(--color-fg);
+	background: var(--color-bg);
+}
+.bar {
+	display: flex;
+	justify-content: space-between;
+	align-items: center;
+	padding: 12px 20px;
+	border-bottom: 1px dashed currentColor;
+}
+main {
+	max-width: 960px;
+	margin: 0 auto;
+	padding: 24px 20px 80px;
+}
+.demo {
+	margin-block: 40px;
+}
+code {
+	font-size: 0.9em;
+}
+
+/* THEME PRESETS: the --dg-* tone variables, scoped per theme. Attribute >
+   variable > default, so these only apply where the element has no attribute
+   of the same name. */
+.hero {
+	--dotted-grid-height: 360px;
+	--dg-polarity: positive;
+	--dg-levels: 6;
+	--dg-contrast: 1.05;
+}
+/* A light dot on near-black glows, so dark affords sparse dots, bloom and hatch. */
+[data-theme="dark"] .hero {
+	--dg-gamma: 0.55;
+	--dg-dot-scale: 1.15;
+	--dg-dot-shape: morph;
+	--dg-feather: 0.65;
+	--dg-denoise: 0.1;
+	--dg-bloom: 0.5;
+	--dg-crosshatch: 0.3;
+}
+/* A dark speck on cream reads as a speck: lower gamma, round dots, no bloom. */
+[data-theme="light"] .hero {
+	--dg-gamma: 0.4;
+	--dg-dot-scale: 1.1;
+	--dg-dot-shape: circle;
+	--dg-cutoff: 0.06;
+	--dg-feather: 0.2;
+	--dg-denoise: 0.3;
+	--dg-bloom: 0;
+	--dg-crosshatch: 0;
+}
+
+.tuned {
+	--dotted-grid-height: 300px;
+}
+.knobs {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px 20px;
+	margin-bottom: 12px;
+	font-size: 14px;
+}
+.knobs label {
+	display: flex;
+	gap: 8px;
+	align-items: center;
+}
+
+.carousel {
+	max-width: 640px;
+}
