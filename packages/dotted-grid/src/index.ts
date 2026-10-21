@@ -1,24 +1,16 @@
+import { FRAGMENT_SHADER, MAX_TRAIL, VERTEX_SHADER } from "./shader";
+import { readNumber, resolveTone, TONE_ATTRS, toneEquals, type RGB, type Tone } from "./tone";
+
+export { resolveTone, TONE_DEFAULTS, type Tone } from "./tone";
+
+// Non-tone defaults. The tone (colours, polarity, gamma, cutoff, ...) has its
+// own, in tone.ts, because it resolves through CSS variables as well.
 const DEFAULTS = {
 	cellSize: 6, // CSS px per grid cell (drives dot density)
-	dotScale: 1, // max square half-width as a fraction of the cell half-size;
-	// 1 fills the cell edge-to-edge so the brightest level reads as a solid block
-	levels: 5, // discrete brightness steps (ASCII-ramp look); <=1 => continuous
-	cutoff: 0, // brightness at/below which a cell goes fully dark — no dot, no
-	// hatch (0 => the lever is off and every cell draws as it always did)
-	denoise: 0, // 0 => one texel decides the cell; 1 => average the cell's footprint
-	feather: 0, // width of the dissolve above `cutoff`; 0 => the cutoff is a hard edge
-	gamma: 0.8, // luminance shaping exponent (>1 darkens mids)
-	contrast: 1.1, // luminance contrast around 0.5
-	color: "", // dot color; empty => read --color-fg
-	background: "", // backdrop color; empty => read --color-bg
 	colorReveal: 80, // pointer trail radius (CSS px) when `color-reveal` is empty
 	shimmer: 8, // percent of dots that flash when `shimmer` is empty
 	revealBoost: 0.3, // vividness of revealed color: 0 = raw sample, 1 = "ascii" pop
-	// --- CRT "display" look (ported from the science-lab dot-matrix shader) ---
-	dotShape: 2, // 0 = square (legacy), 1 = circle, 2 = morph circle->rounded-square
-	bloom: 0.55, // 0..1 glow + phosphor rim on the brightest dots; 0 => off
-	crosshatch: 0.35, // 0..1 cross-hatch shading strength in the darkest cells; 0 => off
-	// --- intro wipe (brightest dots first) ---
+	// --- intro wipe (the fullest dots first) ---
 	introMs: 2600, // duration of the develop-in when `intro` is present but empty
 	introDelayMs: 500, // hold the grid empty this long first, so the wipe reads as
 	// a deliberate entrance rather than something already half-finished by the time
@@ -31,11 +23,6 @@ const DEFAULTS = {
 	// eye can follow their structure, which wastes what makes them interesting.
 	xfadeMs: 1600,
 } as const;
-
-// Map the `dot-shape` attribute string to its shader enum. Numbers pass through
-// (so the playground can drive it with a 0/1/2 range); unknown values fall back
-// to the default morph.
-const DOT_SHAPES: Record<string, number> = { square: 0, circle: 1, morph: 2 };
 
 /**
  * Clip-transition styles for `xfade-mode`, mapped to the shader's enum. Both blend
@@ -61,16 +48,76 @@ const TRANSITIONS: Record<string, number> = {
 	rain: 1,
 };
 
-// Tone settings that accept a `light-` variant (e.g. light-gamma), applied while
-// the backdrop is light. The same values do not read the same in both themes: a
-// small light dot on a dark ground glows and reads larger than it is, while the
-// same dot in dark ink on a light ground reads as a speck, so a light backdrop
-// needs more ink for the same image.
-const LIGHT_ATTRS = ["gamma", "contrast", "cutoff", "feather", "dot-scale", "levels"];
-
 const MAX_DPR = 2; // default clamp on devicePixelRatio; per-instance via `max-dpr`
-const MAX_TRAIL = 32; // pointer samples kept for the color-reveal trail
 const TRAIL_MS = 600; // trail lifetime — longer than fade-in so dots trail out slowly
+
+/**
+ * THEME FLIPS. One observer for every live element, on <html>'s class,
+ * data-theme and style: whatever a theme toggle changes there, the tone
+ * variables may have changed with it. Each element re-resolves its tone and
+ * repaints only if something it uses actually moved. Repainting covers paused
+ * and reduced-motion elements, which have no running loop to pick the change up.
+ *
+ * Most class changes there are not the theme: Lenis toggles `lenis-scrolling`
+ * / `lenis-smooth` on <html> at every scroll start and stop, and re-resolving a
+ * tone costs a style recalc plus canvas readbacks per element. So the pass
+ * first compares a key of the three values (Lenis's classes stripped) against
+ * the last one, a few string reads, and does nothing when it has not moved.
+ *
+ * Coalesced to one pass per frame: a toggle that swaps a class AND an
+ * attribute fires twice, and the second read would see the same values.
+ */
+const live = new Set<DottedGridElement>();
+let themeObserver: MutationObserver | null = null;
+let themePending = false;
+let themeKey = "";
+const SCROLL_STATE_CLASS = /^lenis(-|$)/;
+function readThemeKey(): string {
+	const html = document.documentElement;
+	const classes = Array.from(html.classList)
+		.filter((c) => !SCROLL_STATE_CLASS.test(c))
+		.join(" ");
+	return `${html.getAttribute("data-theme") ?? ""}|${html.getAttribute("style") ?? ""}|${classes}`;
+}
+function watchTheme(el: DottedGridElement) {
+	live.add(el);
+	if (themeObserver || typeof MutationObserver === "undefined") return;
+	themeKey = readThemeKey();
+	themeObserver = new MutationObserver(() => {
+		if (themePending) return;
+		themePending = true;
+		requestAnimationFrame(() => {
+			themePending = false;
+			const key = readThemeKey();
+			if (key === themeKey) return;
+			themeKey = key;
+			for (const g of live) g.refreshTone();
+		});
+	});
+	themeObserver.observe(document.documentElement, {
+		attributes: true,
+		attributeFilter: ["class", "data-theme", "style"],
+	});
+}
+function unwatchTheme(el: DottedGridElement) {
+	live.delete(el);
+	if (live.size === 0 && themeObserver) {
+		themeObserver.disconnect();
+		themeObserver = null;
+	}
+}
+
+/** Dev builds only: name a CSS variable that is set but does not parse (once). */
+const warned = new Set<string>();
+const devWarn: ((message: string) => void) | undefined = (
+	import.meta as ImportMeta & { env?: { DEV?: boolean } }
+).env?.DEV
+	? (message) => {
+			if (warned.has(message)) return;
+			warned.add(message);
+			console.warn(message);
+		}
+	: undefined;
 
 /**
  * `<dotted-grid src="/videos/fabric.web.mp4">` — renders a video as an animated
@@ -84,6 +131,24 @@ const TRAIL_MS = 600; // trail lifetime — longer than fade-in so dots trail ou
  *                 browser can play it. When set, the <video> is fed an ordered
  *                 <source> list (webm, then mp4) so the browser picks the best.
  *   cell-size     grid cell size in CSS px (default 6)
+ *
+ * TONE. Each of these also reads a CSS custom property, `--dg-<name>` (e.g.
+ * `--dg-gamma`), so a stylesheet can tune the grid per theme; see tone.ts.
+ * Precedence is attribute, then variable, then default, and the attribute
+ * ALWAYS wins: leave one on the element and a theme preset for the same setting
+ * silently does nothing. They are resolved once and cached (re-read when an
+ * attribute changes, when <html>'s class / data-theme / style changes, or on
+ * refreshTone()), never per frame.
+ *   ink           dot colour (default: CSS --color-fg)
+ *   ink-hi        the fullest dot's colour; dots blend ink -> ink-hi with their
+ *                 size, a duotone. Unset => a flat ink.
+ *   paper         backdrop colour (default: CSS --color-bg)
+ *   glow          colour the highlight lift, bloom and hatch lean toward, or
+ *                 `auto` (default): black on a light paper, white on a dark one.
+ *   polarity      `positive` (default; dots on the highlights, bright = big) or
+ *                 `negative` (dots on the shadows). Polarity is not colour: to
+ *                 "invert black and white" flip this OR swap ink and paper; to
+ *                 "invert to a colour" set ink / ink-hi to it.
  *   dot-scale     max square half-width as fraction of cell half-size (default 1;
  *                 1 fills the cell so the brightest level is a solid block)
  *   levels        discrete brightness steps for an ASCII-ramp look (default 5);
@@ -120,15 +185,18 @@ const TRAIL_MS = 600; // trail lifetime — longer than fade-in so dots trail ou
  *                 texture reads per fragment, all cache-friendly (every fragment in
  *                 a cell reads the same texels), so it is opt-in per consumer rather
  *                 than always on. 1 is the full average; values between keep some grain.
- *   invert        boolean; flips the brightness->radius mapping
- *   color         dot color (default: CSS --color-fg)
- *   background    backdrop color (default: CSS --color-bg)
  *   gamma         luminance exponent (default 0.8)
  *   contrast      luminance contrast (default 1.1)
- *   light-*       light-gamma, light-contrast, light-cutoff, light-feather,
- *                 light-dot-scale, light-levels: the same setting, used instead
- *                 while the backdrop is light (luma > 0.5). Absent => the plain
- *                 value serves both themes.
+ *   dot-shape     dot silhouette: `square` (legacy per-axis box), `circle`, or
+ *                 `morph` (default) — small/dim dots read as circles, the brightest
+ *                 morph to rounded squares, echoing a phosphor dot-matrix display.
+ *                 A numeric 0/1/2 works too (for the live playground slider).
+ *   bloom         0..1; glow halo + phosphor rim on the brightest dots (default
+ *                 0.55). 0 disables it and falls back to the subtle highlight-lift.
+ *   crosshatch    0..1; cross-hatch engraving marks in the darkest cells, denser as
+ *                 brightness falls (default 0.35). 0 => off.
+ *
+ * EVERYTHING ELSE (attributes only):
  *   paused        boolean; freezes the animation
  *   rate          playback speed multiplier for the video (default 1). <1 slows the
  *                 scene down, >1 speeds it up; clamped to the range browsers
@@ -142,21 +210,15 @@ const TRAIL_MS = 600; // trail lifetime — longer than fade-in so dots trail ou
  *   shimmer       percent (0-100) of dots that spontaneously flash to their true
  *                 color and fade, for ambient life. Absent => off; empty => default.
  *   reveal-boost  0..1; how far a revealed dot's color snaps to the nearest vivid
- *                 ANSI terminal color (default 1). 0 = raw sampled color; 1 = full
- *                 "ascii" pop so reveals stay vivid over a dark video.
+ *                 ANSI terminal color (default 0.3). 0 = raw sampled color; 1 = full
+ *                 "ascii" pop so reveals stay vivid over a dark video. On a light
+ *                 paper the palette is pulled part-way toward the ink so a reveal
+ *                 does not wash out into the page.
  *   no-loop       boolean; plays the video once instead of looping. On the final
  *                 frame it dispatches a bubbling `dotted-grid:ended` CustomEvent so
  *                 a host (e.g. a carousel) can advance. Absent => loops (default).
- *   dot-shape     dot silhouette: `square` (legacy per-axis box), `circle`, or
- *                 `morph` (default) — small/dim dots read as circles, the brightest
- *                 morph to rounded squares, echoing a phosphor dot-matrix display.
- *                 A numeric 0/1/2 works too (for the live playground slider).
- *   bloom         0..1; glow halo + phosphor rim on the brightest dots (default
- *                 0.55). 0 disables it and falls back to the subtle highlight-lift.
- *   crosshatch    0..1; cross-hatch engraving marks in the darkest cells, denser as
- *                 brightness falls (default 0.35). 0 => off.
- *   intro         boolean-or-ms; develop the picture in ONCE on arrival, brightest
- *                 dots first. Each cell's dot grows from nothing to its true size as
+ *   intro         boolean-or-ms; develop the picture in ONCE on arrival, fullest
+ *                 dots first (the ink side, whichever the polarity). Each cell's dot grows from nothing to its true size as
  *                 a brightness threshold sweeps from the highlights down into the
  *                 shadows, so the image resolves out of the backdrop like a print in
  *                 developer. Absent => off (the image simply appears); empty =>
@@ -176,7 +238,7 @@ const TRAIL_MS = 600; // trail lifetime — longer than fade-in so dots trail ou
  *                 texture at the swap, and the shader blends the two PER CELL — so
  *                 the grid itself carries the transition rather than the whole stage
  *                 dipping in opacity. Absent => a plain cut (previous behaviour);
- *                 empty => default 700ms. Skipped under prefers-reduced-motion, and
+ *                 empty => default 1600ms. Skipped under prefers-reduced-motion, and
  *                 whenever the outgoing buffer has no frame to freeze (a cut is
  *                 better than blending against black).
  *   xfade-mode    which transition: `threshold` (default) or `rain`. Both blend the
@@ -209,25 +271,13 @@ export class DottedGridElement extends HTMLElement {
 			"src",
 			"src-webm",
 			"cell-size",
-			"dot-scale",
-			"levels",
-			"cutoff",
-			"denoise",
-			"feather",
-			"invert",
-			"color",
-			"background",
-			"gamma",
-			"contrast",
+			...TONE_ATTRS,
 			"paused",
 			"rate",
 			"color-reveal",
 			"shimmer",
 			"reveal-boost",
 			"no-loop",
-			"dot-shape",
-			"bloom",
-			"crosshatch",
 			"intro",
 			"intro-delay",
 			"intro-jitter",
@@ -235,7 +285,6 @@ export class DottedGridElement extends HTMLElement {
 			"xfade-mode",
 			"xfade-live",
 			"max-dpr",
-			...LIGHT_ATTRS.map((a) => `light-${a}`),
 		];
 	}
 
@@ -283,28 +332,26 @@ export class DottedGridElement extends HTMLElement {
 	private uniforms: Record<string, WebGLUniformLocation | null> = {};
 
 	/**
-	 * RESOLVED DOT + BACKDROP COLOUR, cached across frames.
+	 * THE RESOLVED TONE (colours, polarity, the shaping numbers), cached across
+	 * frames. See tone.ts.
 	 *
-	 * Resolving one is not cheap: with no attribute set the value comes from a CSS
-	 * custom property, so it costs a getComputedStyle() — which forces a style
-	 * recalc — and then a round-trip through a 2D canvas to parse whatever CSS
-	 * colour syntax it holds, which ends in getImageData(): a synchronous readback.
-	 * Twice per frame, for a pair of values that only change when the theme flips.
+	 * Resolving it is not cheap: the values come from CSS custom properties, so it
+	 * costs a getComputedStyle() — which forces a style recalc — and each colour a
+	 * round-trip through a 2D canvas ending in getImageData(): a synchronous
+	 * readback. All for values that only change when the theme flips.
 	 *
-	 * Measured on the hero before this cache: 22-28% of the element's per-frame main
-	 * thread cost, and because a style recalc is only forced when styles are already
-	 * dirty, the spike lands exactly where it hurts — p95 of a single call reached
-	 * 1.0ms during scroll, against a 0.13ms average.
+	 * Measured on the hero when only the two colours were read per frame: 22-28% of
+	 * the element's per-frame main thread cost, and because a style recalc is only
+	 * forced when styles are already dirty, the spike lands exactly where it hurts —
+	 * p95 of a single call reached 1.0ms during scroll, against a 0.13ms average.
 	 *
 	 * null means "not resolved yet". Every path that can change the answer clears
-	 * it: the theme toggle's `themechange`, an OS-level colour-scheme flip, a change
-	 * to the `color`/`background` attributes, and connectedCallback (a view
-	 * transition swaps the element into a fresh document).
+	 * it: a tone attribute changing, <html>'s class / data-theme / style changing
+	 * (the module's MutationObserver), an OS-level colour-scheme flip,
+	 * refreshTone(), and connectedCallback (a view transition swaps the element
+	 * into a fresh document).
 	 */
-	private colorCache: {
-		fg: [number, number, number];
-		bg: [number, number, number];
-	} | null = null;
+	private tone: Tone | null = null;
 
 	private resizeObserver: ResizeObserver | null = null;
 	private intersectionObserver: IntersectionObserver | null = null;
@@ -347,7 +394,8 @@ export class DottedGridElement extends HTMLElement {
 	connectedCallback() {
 		// A view transition can re-insert a PERSISTED element into a freshly built
 		// document, so nothing resolved against the old one survives into this life.
-		this.colorCache = null;
+		this.tone = null;
+		this.reflectPaper();
 
 		this.canvas = document.createElement("canvas");
 		this.appendChild(this.canvas);
@@ -393,24 +441,15 @@ export class DottedGridElement extends HTMLElement {
 			this.removeEventListener("pointermove", onPointerMove)
 		);
 
-		// Repaint when the page theme flips. The color/background uniforms are read
-		// fresh each draw, so a running loop already re-tints; this covers the
-		// paused / reduced-motion case where no loop is painting.
-		const onThemeChange = () => {
-			this.colorCache = null;
-			this.scheduleRender();
-		};
-		document.addEventListener("themechange", onThemeChange);
-		this.listeners.push(() =>
-			document.removeEventListener("themechange", onThemeChange)
-		);
-		// Belt and braces for a theme that moves without that event — an OS-level
-		// colour-scheme flip while the page is open. The cache is the only thing that
-		// makes this necessary: before it, every frame re-read the tokens and picked
-		// such a change up on its own.
+		// Re-resolve the tone when the page theme flips: the module observer on
+		// <html> (see watchTheme), plus an OS-level colour-scheme flip, which moves
+		// prefers-color-scheme tokens without touching <html> at all.
+		watchTheme(this);
+		this.listeners.push(() => unwatchTheme(this));
+		const onScheme = () => this.refreshTone();
 		const scheme = matchMedia("(prefers-color-scheme: dark)");
-		scheme.addEventListener("change", onThemeChange);
-		this.listeners.push(() => scheme.removeEventListener("change", onThemeChange));
+		scheme.addEventListener("change", onScheme);
+		this.listeners.push(() => scheme.removeEventListener("change", onScheme));
 
 		this.resizeObserver = new ResizeObserver(() => this.resize());
 		this.resizeObserver.observe(this);
@@ -497,6 +536,7 @@ export class DottedGridElement extends HTMLElement {
 
 	attributeChangedCallback(name: string, oldValue: string, newValue: string) {
 		if (oldValue === newValue) return;
+		if (name === "paper") this.reflectPaper();
 		if (!this.gl) return; // not yet connected
 
 		// `src` drives the (gapless) swap; it reads `src-webm` fresh, so a host that
@@ -524,11 +564,53 @@ export class DottedGridElement extends HTMLElement {
 			this.resize();
 			return;
 		}
-		// These two are the cached pair — drop the cache so the next draw re-resolves.
-		if (name === "color" || name === "background") this.colorCache = null;
-		// cell-size / dot-scale / invert / color / background / gamma / contrast:
-		// uniforms are read fresh each draw, so just repaint the current frame.
+		// A tone attribute: drop the cached tone so the next draw re-resolves it.
+		if (TONE_ATTRS.includes(name)) this.tone = null;
+		// Everything else is read fresh each draw, so just repaint the frame.
 		this.scheduleRender();
+	}
+
+	/**
+	 * Re-read the tone (attributes and --dg-* variables) and repaint if it moved.
+	 *
+	 * Called for you when <html>'s class, data-theme or style changes, and on an
+	 * OS colour-scheme flip. Call it yourself after changing a --dg-* variable
+	 * anywhere else (on an ancestor's style, say): nothing observes those.
+	 */
+	refreshTone() {
+		if (!this.gl) return;
+		const next = this.resolveTone();
+		if (toneEquals(this.tone, next)) return;
+		this.tone = next;
+		this.scheduleRender();
+	}
+
+	/**
+	 * Mirror a valid `paper` attribute onto the host's --dg-paper, so the box's
+	 * pre-frame background (styles.css) is the paper the shader will paint, in
+	 * the same order resolveTone reads it: attribute, --dg-paper, --color-bg.
+	 * Removed again only if it was this that set it.
+	 */
+	private reflectedPaper = false;
+	private reflectPaper() {
+		const paper = this.getAttribute("paper")?.trim();
+		if (paper && CSS.supports("color", paper)) {
+			this.style.setProperty("--dg-paper", paper);
+			this.reflectedPaper = true;
+		} else if (this.reflectedPaper) {
+			this.style.removeProperty("--dg-paper");
+			this.reflectedPaper = false;
+		}
+	}
+
+	private resolveTone(): Tone {
+		const style = getComputedStyle(this);
+		return resolveTone(
+			(n) => this.getAttribute(n),
+			(n) => style.getPropertyValue(n),
+			parseCssColor,
+			devWarn
+		);
 	}
 
 	/**
@@ -782,10 +864,10 @@ export class DottedGridElement extends HTMLElement {
 		// Hold empty for the delay, THEN develop. Measured from the first decoded
 		// frame like the wipe itself, so the two compose into one predictable
 		// entrance regardless of how long the video took to arrive.
-		// numZero (not num): an explicit intro-delay="0" must mean "start immediately"
-		// rather than falling back to the default. It already clamps negatives.
+		// zero allowed: an explicit intro-delay="0" must mean "start immediately"
+		// rather than falling back to the default. Negatives read as 0.
 		const elapsed = performance.now() - this.introStart;
-		const delay = this.numZero("intro-delay", DEFAULTS.introDelayMs);
+		const delay = this.num("intro-delay", DEFAULTS.introDelayMs, true);
 		if (elapsed < delay) return 0;
 
 		const ms = Math.max(1, this.num("intro", DEFAULTS.introMs));
@@ -811,532 +893,7 @@ export class DottedGridElement extends HTMLElement {
 		const gl = this.gl;
 		if (!gl) return false;
 
-		const vs = `#version 300 es
-		in vec2 aPos;
-		out vec2 vUv;
-		void main() {
-			// aPos spans the clip-space quad [-1,1]; map to [0,1] uv with v flipped
-			// so the video is upright (texture origin is bottom-left).
-			vUv = vec2(aPos.x * 0.5 + 0.5, 0.5 - aPos.y * 0.5);
-			gl_Position = vec4(aPos, 0.0, 1.0);
-		}`;
-
-		const fs = `#version 300 es
-		precision highp float;
-		#define MAX_TRAIL ${MAX_TRAIL}
-		in vec2 vUv;
-		out vec4 fragColor;
-
-		uniform sampler2D uTex;
-		uniform sampler2D uPrevTex;  // outgoing clip's last frame, during a transition
-
-		// CLIP TRANSITION. uXfade 0..1 walks the outgoing clip to the incoming one;
-		// 1 (the idle state) means "show uTex only" and skips every branch below.
-		// uXfadeMode selects the character of the transition — see TRANSITIONS in
-		// index.ts for the names.
-		uniform float uXfade;
-		uniform float uXfadeMode;
-		uniform vec2 uResolution;   // canvas size in device px
-		uniform float uVideoAspect; // video w/h
-		uniform float uCell;        // cell size in device px
-		uniform float uDotScale;    // max radius as fraction of cell half-size
-		uniform float uLevels;      // discrete brightness steps (<=1 => continuous)
-		uniform float uCutoff;      // dots at/below this brightness are not drawn at all
-		uniform float uDenoise;     // 0 = point-sample the cell centre, 1 = average the cell
-		uniform float uFeather;     // width (brightness units) of the dissolve above uCutoff
-		uniform float uInvert;      // 0 or 1
-		uniform float uGamma;
-		uniform float uContrast;
-		uniform vec3 uColor;        // dot color
-		uniform vec3 uBg;           // backdrop color
-
-		// CRT "display" look. Each is off at 0 so a uniform branch skips its cost.
-		uniform float uShape;       // 0 square, 1 circle, 2 morph circle->rounded-square
-		uniform float uBloom;       // 0..1 glow + phosphor rim on bright dots
-		uniform float uCrosshatch;  // 0..1 cross-hatch marks in the darkest cells
-
-		// Color reveal: dots within the trail radius or caught by the shimmer show
-		// their true sampled color instead of the flat uColor.
-		uniform vec2 uTrail[MAX_TRAIL]; // recent pointer positions, device px
-		uniform float uTrailAge[MAX_TRAIL]; // 0 = newest .. 1 = oldest
-		uniform int uTrailCount;    // active samples (0 => trail off)
-		uniform float uRevealRadius;// pointer influence radius, device px
-		uniform float uTime;        // seconds, for the shimmer pulse
-		uniform float uShimmer;     // fraction 0..1 of dots that shimmer (0 => off)
-		uniform float uRevealBoost; // 0 = raw sampled color, 1 = snap to ANSI palette
-
-		// INTRO WIPE. 0 = nothing drawn (flat backdrop), 1 = the full image. Cells
-		// cross in by BRIGHTNESS — the highlights arrive first and the shadows last,
-		// so the picture develops out of the background like a photographic print
-		// rather than cross-fading as one flat layer. 1 disables it entirely.
-		uniform float uIntro;
-		uniform float uIntroJitter; // randomness in the wavefront, in brightness units
-
-		// "cover" mapping: fit the video across the canvas without stretching,
-		// centered, cropping the overflowing axis.
-		vec2 coverUv(vec2 uv) {
-			float canvasAspect = uResolution.x / uResolution.y;
-			vec2 scale = vec2(1.0);
-			if (canvasAspect > uVideoAspect) {
-				scale.y = uVideoAspect / canvasAspect; // pillar: crop top/bottom
-			} else {
-				scale.x = canvasAspect / uVideoAspect; // letter: crop left/right
-			}
-			return (uv - 0.5) * scale + 0.5;
-		}
-
-		float luma(vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
-
-		// WHAT ONE CELL SEES. Point-sampling the centre asks a single texel to speak for
-		// the whole cell, and video is the worst possible source for that: an H.264 frame
-		// carries quantization noise and macroblock structure that no eye can see in the
-		// footage itself, but a halftone hands every one of those wobbles a vote on
-		// whether its cell lights up. The damage is nonlinear-shaped too -- pow(b, gamma)
-		// with a low gamma has a huge slope near black, so a 1/255 codec wobble in the
-		// shadows becomes a visible jump in dot size, and next to a cutoff it becomes
-		// presence or absence. That is what reads as salt-and-pepper strays and a
-		// dithered, ragged edge along a fold.
-		//
-		// Averaging the cell's own footprint answers the question the halftone is
-		// actually asking -- "how bright is this REGION" — instead of "how bright is this
-		// one texel". Five taps (centre plus the quarter-points) on a rotated-square
-		// pattern: enough to swamp per-texel noise, cheap because every fragment in a
-		// cell reads the same five texels, so they are already in cache.
-		//
-		// uDenoise blends between the two rather than switching, so a consumer can keep
-		// some of the grain if the noise is part of the look.
-		vec3 sampleCell(sampler2D tex, vec2 centerPx) {
-			vec2 c = clamp(coverUv(centerPx / uResolution), 0.0, 1.0);
-			vec3 mid = texture(tex, c).rgb;
-			if (uDenoise <= 0.0) return mid;
-			float o = uCell * 0.25;
-			vec3 sum = mid;
-			sum += texture(tex, clamp(coverUv((centerPx + vec2(-o, -o)) / uResolution), 0.0, 1.0)).rgb;
-			sum += texture(tex, clamp(coverUv((centerPx + vec2( o, -o)) / uResolution), 0.0, 1.0)).rgb;
-			sum += texture(tex, clamp(coverUv((centerPx + vec2(-o,  o)) / uResolution), 0.0, 1.0)).rgb;
-			sum += texture(tex, clamp(coverUv((centerPx + vec2( o,  o)) / uResolution), 0.0, 1.0)).rgb;
-			return mix(mid, sum * 0.2, uDenoise);
-		}
-
-		// Highlight lift: the brightest cells blend from uColor toward the contrast
-		// pole of the background (white on a dark bg, black on a light bg) so
-		// highlights glow instead of reading as same-color-but-bigger dots. Automatic
-		// and uniform — no attribute. HI_THRESHOLD is where the lift starts on the
-		// shaped brightness; HI_STRENGTH is how far it goes at full brightness.
-		const float HI_THRESHOLD = 0.75;
-		const float HI_STRENGTH = 0.85;
-
-		// Stable per-cell pseudo-random in [0,1) from integer cell coords.
-		float hash(vec2 cell) {
-			return fract(sin(dot(cell, vec2(12.9898, 78.233))) * 43758.5453);
-		}
-
-		// Snap a sampled color to the nearest vivid ANSI terminal color, giving the
-		// reveal a bright "ascii art" pop. The source is normalized to full value
-		// first (hue preserved, brightness maxed) so even dark pixels resolve to a
-		// vivid palette entry instead of a muddy near-black one. Palette = the 6
-		// bright ANSI hues + bright white (black/greys are intentionally excluded so
-		// revealed dots always pop). uRevealBoost blends raw sample -> snapped.
-		vec3 ansiSnap(vec3 c) {
-			const vec3 PALETTE[7] = vec3[7](
-				vec3(1.0, 0.0, 0.0), // bright red
-				vec3(0.0, 1.0, 0.0), // bright green
-				vec3(1.0, 1.0, 0.0), // bright yellow
-				vec3(0.36, 0.36, 1.0), // bright blue
-				vec3(1.0, 0.0, 1.0), // bright magenta
-				vec3(0.0, 1.0, 1.0), // bright cyan
-				vec3(1.0, 1.0, 1.0)  // bright white
-			);
-			float m = max(max(c.r, c.g), c.b);
-			vec3 norm = c / max(m, 1e-4); // push brightest channel to 1 (keep hue)
-			vec3 best = PALETTE[0];
-			float bestD = 1e9;
-			for (int i = 0; i < 7; i++) {
-				float d = distance(norm, PALETTE[i]);
-				if (d < bestD) { bestD = d; best = PALETTE[i]; }
-			}
-			return mix(c, best, uRevealBoost);
-		}
-
-		void main() {
-			// Work in device pixels so cells are square regardless of aspect.
-			vec2 px = vUv * uResolution;
-			vec2 cell = floor(px / uCell);
-			vec2 cellCenterPx = (cell + 0.5) * uCell;
-
-			// Sample the video over the cell (cover-mapped) — see sampleCell.
-			vec2 sampleUv = coverUv(cellCenterPx / uResolution);
-			vec2 sUv = clamp(sampleUv, 0.0, 1.0);
-			vec3 src = sampleCell(uTex, cellCenterPx);
-
-			// CLIP TRANSITION. Blends the outgoing frame into the incoming one PER CELL
-			// rather than fading the whole stage, so the grid itself carries the cut.
-			// Each mode decides, for this cell, how far along the blend it is: t < 0
-			// means "still the old clip here", t > 1 "fully the new one". The dot's
-			// brightness is then read from whichever mix that implies, so a cell can
-			// finish switching before its neighbour has started.
-			//
-			// Uniform branch on the idle value, so a carousel sitting on one clip pays
-			// nothing for any of this.
-			//
-			// xfPulse is a per-cell dot-SIZE multiplier a mode may drive, so a
-			// transition can swell or collapse the dots as it passes through them
-			// instead of only changing what they sample. Applied after the level ramp
-			// (below) and clamped there, so a bulging dot fattens within its own cell
-			// rather than bleeding into its neighbours and turning the grid to mush.
-			float xfPulse = 1.0;
-			// A transition may also tint its wake (xfTintAmt 0 = leave the dot colour
-			// alone), so a mode can carry its own light — e.g. the phosphor green of a
-			// code rain -- without permanently touching the element's "color" attribute.
-			vec3 xfTint = vec3(1.0);
-			float xfTintAmt = 0.0;
-
-			if (uXfade < 1.0) {
-				vec3 prev = sampleCell(uPrevTex, cellCenterPx);
-				float t = uXfade;
-				float m = uXfadeMode;
-
-				if (m < 0.5) {
-					// 0 THRESHOLD (default) — a hard per-cell flip, ordered by the INCOMING
-					// dot's own value. The new clip's brightest cells claim their place first
-					// and its shadows last, so the image assembles by its own structure:
-					// highlights arrive as a sparse constellation that fills into a picture.
-					// Each cell holds on the old clip until its moment, then switches — the
-					// snap is the point, so this is deliberately not a soft cross-fade.
-					float rank = 1.0 - luma(src);      // 0 = brightest incoming cell
-					// A hard-ish edge (0.12) rather than a soft shoulder: the flip should read
-					// as a switch, not a fade. A sliver of jitter keeps cells of identical
-					// value from popping as one flat sheet.
-					float j = (hash(cell + 29.0) - 0.5) * 0.07;
-					float k = smoothstep(rank + j, rank + j + 0.12, t * 1.12);
-					src = mix(prev, src, k);
-					// Brief overshoot as each cell lands, so the arrival has a tick to it.
-					xfPulse = 1.0 + (k - k * k) * 1.6;
-				} else {
-					// 1 RAIN — Matrix code rain. Each COLUMN of dots has its own drop falling
-					// down it; the clip is rewritten behind each drop as it passes, so the
-					// image is literally typed down the screen in phosphor green.
-					//
-					// Most columns fall MORE THAN ONCE, writing new-then-old-then-new, so they
-					// visibly flicker between the two clips before settling. Columns also
-					// finish at staggered times, so the rain thins out and dies down rather
-					// than every drop stopping at once.
-					float cols = uResolution.x / uCell;
-					float rows = uResolution.y / uCell;
-					float col = floor(sUv.x * cols);
-					float row = floor(sUv.y * rows);
-
-					// Passes per column: 1..3, from a per-column hash.
-					float passes = 1.0 + floor(hash(vec2(col, 13.0)) * 3.0);
-					// Head start, as a fraction of ONE pass, so columns are out of step.
-					float stagger = hash(vec2(col, 7.0)) * 0.6;
-
-					// WHEN this column finishes, as a fraction of the transition: spread over
-					// the second half and skewed (the square) so most land early and a few
-					// stragglers trail, which is what makes the rain die down.
-					float fin = hash(vec2(col, 19.0));
-					float finish = 0.45 + 0.55 * fin * fin;
-
-					// Travel in passes, normalized so this column completes exactly at its own
-					// finish time and then HOLDS. Every column completes — none is left
-					// mid-fall with the old clip still showing in its lower half.
-					float local = clamp(t / finish, 0.0, 1.0);
-					float travel = (local + stagger) / (1.0 + stagger) * passes;
-					float pass = floor(travel);            // which pass this column is on
-					float within = fract(travel);          // 0..1 progress through it
-
-					// The drop's head, in rows, for the current pass. Runs from above the top
-					// edge to past the bottom so the whole column is covered.
-					float span = rows + 12.0;
-					float head = within * span - 6.0;
-					float d = head - row;                  // >0 once the drop has passed
-
-					// Which clip this pass writes. The LAST pass must land on the incoming
-					// clip, so alternate backwards from the end: with N passes total and some
-					// complete, an even number remaining means this pass writes the new clip.
-					float remaining = passes - 1.0 - pass;
-					float writesNew = mod(remaining, 2.0) < 0.5 ? 1.0 : 0.0;
-					// Cells the drop has passed show this pass's target; cells ahead of it show
-					// whatever the previous pass left, which is the opposite clip (or, on the
-					// first pass, the outgoing one).
-					float behind = clamp(d * 0.6, 0.0, 1.0);
-					float already = (pass < 0.5) ? 0.0 : (1.0 - writesNew);
-					float k = mix(already, writesNew, behind);
-					src = mix(prev, src, k);
-
-					// The drop itself: a soft green trail ABOVE the head, fading upward. No
-					// enlarged or whitened head cell — the leading edge reads as the brightest
-					// point of the trail rather than a blob travelling down the column.
-					float trail = (d <= 0.0) ? clamp(1.0 + d / 10.0, 0.0, 1.0) : 0.0;
-					xfTint = vec3(0.35, 1.0, 0.45);
-					xfTintAmt = trail * 0.85;
-					src += vec3(0.10) * trail;
-				}
-			}
-
-			// Brightness -> shaped value in [0,1].
-			float b = luma(src);
-			b = clamp((b - 0.5) * uContrast + 0.5, 0.0, 1.0);
-			b = pow(b, uGamma);
-			// invert: bright cells give small dots instead of large ones.
-			float amount = mix(b, 1.0 - b, uInvert);
-
-			// ASCII-ramp look: snap brightness to a few discrete steps so the grid
-			// reads as stepped glyph densities rather than a smooth size gradient.
-			// Level 0 is empty; the top level fills the whole cell (solid block).
-			// The pre-quantization value, kept for the feather below. The ramp's whole
-			// job is to snap sizes to a few rungs, so nothing downstream of it can fade
-			// anything smoothly — a dissolve needs the continuous signal back.
-			float raw = amount;
-
-			if (uLevels > 1.0) {
-				float step = round(amount * uLevels) / uLevels;
-				amount = step;
-			}
-
-			// BLACK POINT. Below uCutoff a cell draws no dot at all — bare background,
-			// not a minimum-size speck. Without it the ramp's floor is whatever the
-			// quantizer's lowest non-zero rung happens to be (1/uLevels), so a merely
-			// dim region still reads as an even field of small dots; the grid can never
-			// go sparse. Note round() above makes the empty rung only half as wide as
-			// the others, so "off" is the hardest value in the ramp to actually land on
-			// — this is the lever that widens it.
-			//
-			// Deliberately AFTER quantization so the setting composes with "levels" as
-			// "drop the bottom N rungs" rather than shifting where every rung falls,
-			// and BEFORE the intro wipe so a cut-off cell stays empty throughout the
-			// entrance instead of growing in and then popping out at the end.
-			//
-			// <= , so cutoff exactly on a rung (0.2 with levels=5) clears that rung
-			// rather than leaving it a hair above the line.
-			//
-			// cellOn carries the verdict down to the CRT layers below, because "no dot"
-			// is not the same as "nothing here" — the crosshatch keys on LOW amount and
-			// so would come up to FULL strength in exactly the cells this just emptied,
-			// replacing every cut dot with an engraving mark and leaving the flat field
-			// the cutoff was reached for in the first place. Switching a cell off has to
-			// switch off everything the cell draws.
-			//
-			// Gated on uCutoff > 0 so the lever is genuinely inert at its default: an
-			// already-black cell keeps its hatch exactly as before, and only a cutoff
-			// someone asked for takes cells all the way out.
-			float cellOn = 1.0;
-			if (uCutoff > 0.0 && amount <= uCutoff) {
-				amount = 0.0;
-				cellOn = 0.0;
-			}
-
-			// FEATHER. The cutoff on its own is a cliff, and the ramp above it cannot
-			// soften one: quantization means the lowest surviving rung arrives at its
-			// full size: 1/levels of the cell, all at once, along whatever contour the
-			// threshold happens to trace. The field therefore ends at a hard coastline
-			// however well the tone curve is set.
-			//
-			// So dots in a band above the cutoff scale continuously to nothing, against
-			// "raw" — the un-quantized brightness — which is the only signal left that
-			// still varies smoothly across that contour. The edge of the field becomes a
-			// gradient of shrinking dots that dissolve into the background, and because
-			// the dot mask feathers by coverage once a dot drops below a pixel, the very
-			// last of it fades in alpha rather than blinking out.
-			//
-			// cellOn carries the same fade (not a binary any more) so every other layer
-			// leaves with the dots instead of standing there once they have gone.
-			if (uFeather > 0.0) {
-				float fade = smoothstep(uCutoff, uCutoff + uFeather, raw);
-				amount *= fade;
-				cellOn = min(cellOn, fade);
-			}
-
-			// INTRO WIPE, scaling "amount" -- the dot's SIZE driver -- rather than the
-			// final color. That makes each dot GROW from nothing to its true size, so
-			// the reveal speaks the grid's own vocabulary: the quantity that encodes
-			// brightness also encodes arrival. Fading the finished image instead would
-			// just be a cross-dissolve with extra steps.
-			//
-			// The wavefront is a moving threshold on brightness: at uIntro = t, cells
-			// brighter than roughly (1 - t) have arrived and dimmer ones have not, with
-			// a soft shoulder so the edge is a gradient rather than a hard cut.
-			// Highlights therefore land first and the shadows fill in last.
-			//
-			// Deliberately AFTER the level quantization: the ramp fixes each dot's
-			// TARGET size and the intro then scales continuously toward it. Quantizing
-			// afterwards instead would make every dot climb the ramp's discrete steps
-			// on its way in, which reads as chunky stair-stepping mid-animation.
-			//
-			// Gated on < 1.0 so the steady state costs nothing -- a uniform branch, so
-			// every fragment takes the same path and there is no warp divergence.
-			// Per-cell arrival, 0 = not yet here, 1 = fully arrived. Kept in scope past
-			// this block because the CRT layers below have to honour it too.
-			float arrived = 1.0;
-			if (uIntro < 1.0) {
-				// Rank this cell on the wavefront by its own brightness, plus a little
-				// per-cell noise so the boundary breaks into grain instead of sweeping
-				// as a visible contour through flat regions of the image.
-				float rank = b + (hash(cell) - 0.5) * uIntroJitter;
-				// Widen the sweep past both ends so uIntro 0 is genuinely empty (even
-				// the brightest cell is out) and 1 is genuinely complete (even the
-				// darkest is in), jitter included.
-				const float SHOULDER = 0.22; // softness of the arrival edge
-				float front = mix(1.0 + uIntroJitter, -uIntroJitter - SHOULDER, uIntro);
-				arrived = smoothstep(front, front + SHOULDER, rank);
-				amount *= arrived;
-			}
-
-			// Dot silhouette. Three shapes share the same half-width (device px);
-			// only the edge test differs.
-			float halfCell = uCell * 0.5;
-			vec2 dvec = px - cellCenterPx;                // signed offset from center
-			vec2 absD = abs(dvec);                        // device px from center
-			// Dot half-width (device px). xfPulse lets a transition swell/shrink dots as
-			// it passes; clamped to the cell's half-diagonal so even a big pulse fills
-			// its own cell at most and the grid never smears into a solid sheet.
-			float halfW = amount * uDotScale * halfCell * max(xfPulse, 0.0);
-			halfW = min(halfW, halfCell * 1.415);
-			float circleDist = length(dvec);
-			const float AA = 1.0;                         // fixed ~1px feather (device px)
-
-			// sd is a signed distance (px, <0 inside) used by the bloom halo and
-			// phosphor rim regardless of the drawn shape.
-			float mask;
-			float sd;
-			if (uShape < 0.5) {
-				// Legacy square: per-axis box (product of two 1D edges) with fwidth AA.
-				// A Chebyshev max() distance is discontinuous along the cell diagonals,
-				// so fwidth()-based AA spikes there and corners read as stray triangles;
-				// two smooth axis edges avoid that. (The bloom/rim sd below may use the
-				// box SDF safely because it feathers with a fixed AA, not fwidth.)
-				vec2 aa = fwidth(absD);
-				vec2 edge = 1.0 - smoothstep(halfW - aa, halfW + aa, absD);
-				mask = (halfW > 0.0) ? edge.x * edge.y : 0.0;
-				sd = max(absD.x, absD.y) - halfW;
-			} else if (uShape < 1.5) {
-				// Circle.
-				sd = circleDist - halfW;
-				mask = (halfW > 0.0) ? 1.0 - smoothstep(-AA, AA, sd) : 0.0;
-			} else {
-				// Morph: dim/small dots read as circles, bright dots pull toward a
-				// rounded square (corner radius shrinks as brightness rises).
-				float cornerR = min(halfW, mix(halfW * 0.9, halfW * 0.25, smoothstep(0.15, 0.7, amount)));
-				vec2 qd = absD - vec2(halfW - cornerR);
-				float sdRound = length(max(qd, 0.0)) + min(max(qd.x, qd.y), 0.0) - cornerR;
-				float sq = smoothstep(0.15, 0.7, amount);
-				sd = mix(circleDist - halfW, sdRound, sq);
-				mask = (halfW > 0.0) ? 1.0 - smoothstep(-AA, AA, sd) : 0.0;
-			}
-
-			// Bloom halo + phosphor rim on the brightest dots (branch-gated: 0 cost
-			// when uBloom == 0 or the cell is dim). The halo is a soft ring just
-			// OUTSIDE the dot edge; the rim is a bright lip just INSIDE it — together
-			// they read as glowing phosphor rather than a flat, larger dot.
-			float glow = 0.0;
-			float rim = 0.0;
-			if (uBloom > 0.0 && amount > 0.5 && halfW > 0.0) {
-				float bright = smoothstep(0.5, 1.0, amount);
-				float haloW = max(2.0, halfW * 0.9);
-				glow = (sd > 0.0) ? (1.0 - smoothstep(0.0, haloW, sd)) * bright * uBloom * 0.5 : 0.0;
-				float rimPx = max(1.0, halfW * 0.3);
-				float inner = 1.0 - smoothstep(-AA, AA, sd + rimPx);
-				rim = max(mask - inner, 0.0) * bright * uBloom;
-			}
-
-			// Cross-hatch engraving in the darkest cells: a rotated dot-lattice whose
-			// marks grow denser as brightness falls (branch-gated to shadow cells).
-			// NB the * arrived at the end: this layer keys off LOW amount, and the intro
-			// wipe drives amount toward 0 — so without it the hatch would grow STRONGER
-			// the less of a cell had arrived, actively drawing the shadow texture over
-			// the very cells the wipe is holding back.
-			float hatch = 0.0;
-			if (uCrosshatch > 0.0 && amount < 0.4 && cellOn > 0.0) {
-				float shadow = smoothstep(0.4, 0.0, amount); // 1 in the darkest cells
-				float spacing = uCell * 0.7;
-				float ca = cos(0.4363), sa = sin(0.4363);   // ~25deg
-				vec2 rp = vec2(ca * px.x - sa * px.y, sa * px.x + ca * px.y);
-				vec2 hcell = floor(rp / spacing);
-				vec2 hcenter = (hcell + 0.5) * spacing;
-				float hd = length(rp - hcenter);
-				float hr = mix(0.4, spacing * 0.18, shadow);
-				hatch = (1.0 - smoothstep(hr - 0.6, hr + 0.6, hd)) * shadow * uCrosshatch * arrived * cellOn;
-			}
-
-			// --- color reveal: how much of the true video color to show here -----
-			// Pointer trail: strongest near a recent sample, decaying with distance
-			// (radial falloff) and sample age (1 - age). Newest sample => full color
-			// (fast fade-in); older samples decay over TRAIL_MS (slow fade-out).
-			// Skip the whole scan when the trail is empty (the common case — the hero
-			// has no color-reveal), so those fragments don't spin the MAX_TRAIL loop.
-			float trail = 0.0;
-			if (uTrailCount > 0) {
-				for (int i = 0; i < MAX_TRAIL; i++) {
-					if (i >= uTrailCount) break;
-					float d = distance(cellCenterPx, uTrail[i]);
-					float falloff = 1.0 - smoothstep(0.0, uRevealRadius, d);
-					trail = max(trail, falloff * (1.0 - uTrailAge[i]));
-				}
-			}
-
-			// Shimmer: a fraction (uShimmer) of cells, chosen by hash, flash to color
-			// on their own cycle. Each participating cell gets a random phase/speed
-			// and a narrow spike per loop so only a few glow at any instant.
-			float shimmer = 0.0;
-			if (uShimmer > 0.0) {
-				float h = hash(cell);
-				if (h < uShimmer) {
-					float speed = 0.15 + hash(cell + 7.0) * 0.35;
-					float phase = hash(cell + 3.0);
-					float cycle = fract(uTime * speed + phase);
-					// Short bright spike (~12% of the cycle) that eases out.
-					shimmer = 1.0 - smoothstep(0.0, 0.12, cycle);
-				}
-			}
-
-			float colorRestore = clamp(max(trail, shimmer), 0.0, 1.0);
-			// Revealed dots show a vivid ANSI-snapped color; unrevealed stay flat.
-			// Guard the ansiSnap() palette search so it only runs where a dot is
-			// actually revealed — most cells have colorRestore == 0 and would just
-			// discard the result, so this skips the 7-iteration loop grid-wide.
-			vec3 dot = uColor;
-			if (colorRestore > 0.0) {
-				dot = mix(uColor, ansiSnap(src), colorRestore);
-			}
-			// A transition's own light (the code rain's phosphor head/trail). Applied
-			// after the reveal colour so it rides over everything, and only where the
-			// mode asked for it — xfTintAmt is 0 for every other mode and at rest.
-			if (xfTintAmt > 0.0) {
-				dot = mix(dot, xfTint, clamp(xfTintAmt, 0.0, 1.0));
-			}
-
-			// Highlight lift: push the brightest cells toward the background's
-			// contrast pole so they glow. Keyed on amount (the value that drives
-			// dot size, so the biggest dots glow — and it stays correct under
-			// invert, where amount differs from b). Attenuated by (1 - colorRestore)
-			// so a dot currently showing its revealed/shimmer color keeps it instead
-			// of being washed toward the pole. Pole derived from uBg => theme-safe
-			// (both consumers hardcode uColor; only the bg flips with theme).
-			vec3 hiPole = mix(vec3(1.0), vec3(0.0), step(0.5, luma(uBg)));
-			// When bloom drives the highlight glow, fold back the standing highlight-lift
-			// so the two don't double-count (bloom is the stronger, explicit version).
-			float hiLift = smoothstep(HI_THRESHOLD, 1.0, amount) * HI_STRENGTH
-				* (1.0 - colorRestore) * (1.0 - clamp(uBloom, 0.0, 1.0));
-			dot = mix(dot, hiPole, hiLift);
-
-			// Compose: start from the backdrop, engrave the shadow hatch, add the bloom
-			// halo, paint the dot, then lift its phosphor rim toward the glow pole.
-			vec3 result = uBg;
-			result = mix(result, mix(uColor, hiPole, 0.3), hatch);
-			// Glow and rim move TOWARD the pole rather than adding it. On a dark backdrop
-			// that is the same thing (the pole is white, and bg is near 0). On a light
-			// one the pole is black, and ADDING black did nothing — so bloom was
-			// silently off on the light theme and the same settings rendered visibly
-			// fainter there than on the dark one.
-			vec3 toPole = hiPole - uBg;
-			result += toPole * glow;
-			result = mix(result, dot, mask);
-			result += toPole * rim * 0.6;
-
-			fragColor = vec4(result, 1.0);
-		}`;
-
-		const program = this.buildProgram(vs, fs);
+		const program = this.buildProgram(VERTEX_SHADER, FRAGMENT_SHADER);
 		if (!program) return false;
 		this.program = program;
 
@@ -1378,11 +935,14 @@ export class DottedGridElement extends HTMLElement {
 			"uCutoff",
 			"uDenoise",
 			"uFeather",
-			"uInvert",
+			"uPolarity",
 			"uGamma",
 			"uContrast",
-			"uColor",
-			"uBg",
+			"uInk",
+			"uInkHi",
+			"uPaper",
+			"uGlow",
+			"uPaletteMix",
 			"uTrail",
 			"uTrailAge",
 			"uTrailCount",
@@ -1589,23 +1149,12 @@ export class DottedGridElement extends HTMLElement {
 		if (!gl || !video || !this.program) return;
 
 		// Upload the current video frame when one is available.
-		if (video.readyState >= 2 /* HAVE_CURRENT_DATA */ && video.videoWidth > 0) {
-			gl.bindTexture(gl.TEXTURE_2D, this.texture);
-			gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
-			gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, video);
-			this.textureReady = true;
-		}
+		if (this.upload(gl.TEXTURE0, this.texture, video)) this.textureReady = true;
 		if (!this.textureReady) return; // nothing to show yet
 
 		const dpr = this.effectiveDpr();
-		if (!this.colorCache) {
-			this.colorCache = {
-				fg: this.readColor("color", "--color-fg", [0.9, 0.9, 0.9]),
-				bg: this.readColor("background", "--color-bg", [0, 0, 0]),
-			};
-		}
-		const [r, g, b] = this.colorCache.fg;
-		const [br, bg, bb] = this.colorCache.bg;
+		if (!this.tone) this.tone = this.resolveTone();
+		const tone = this.tone;
 		const aspect = video.videoWidth / Math.max(1, video.videoHeight);
 
 		gl.useProgram(this.program);
@@ -1624,28 +1173,22 @@ export class DottedGridElement extends HTMLElement {
 		gl.uniform2f(this.uniforms.uResolution, gl.canvas.width, gl.canvas.height);
 		gl.uniform1f(this.uniforms.uVideoAspect, aspect);
 		gl.uniform1f(this.uniforms.uCell, this.num("cell-size", DEFAULTS.cellSize) * dpr);
-		gl.uniform1f(this.uniforms.uDotScale, this.num("dot-scale", DEFAULTS.dotScale));
-		gl.uniform1f(this.uniforms.uLevels, this.num("levels", DEFAULTS.levels));
-		gl.uniform1f(
-			this.uniforms.uCutoff,
-			Math.min(1, this.numZero("cutoff", DEFAULTS.cutoff))
-		);
-		gl.uniform1f(
-			this.uniforms.uDenoise,
-			Math.min(1, this.numZero("denoise", DEFAULTS.denoise))
-		);
-		gl.uniform1f(
-			this.uniforms.uFeather,
-			Math.min(1, this.numZero("feather", DEFAULTS.feather))
-		);
-		gl.uniform1f(this.uniforms.uInvert, this.hasAttribute("invert") ? 1 : 0);
-		gl.uniform1f(this.uniforms.uGamma, this.num("gamma", DEFAULTS.gamma));
-		gl.uniform1f(this.uniforms.uContrast, this.num("contrast", DEFAULTS.contrast));
-		gl.uniform3f(this.uniforms.uColor, r, g, b);
-		gl.uniform3f(this.uniforms.uBg, br, bg, bb);
-		gl.uniform1f(this.uniforms.uShape, this.shape());
-		gl.uniform1f(this.uniforms.uBloom, this.numZero("bloom", DEFAULTS.bloom));
-		gl.uniform1f(this.uniforms.uCrosshatch, this.numZero("crosshatch", DEFAULTS.crosshatch));
+		gl.uniform1f(this.uniforms.uDotScale, tone.dotScale);
+		gl.uniform1f(this.uniforms.uLevels, tone.levels);
+		gl.uniform1f(this.uniforms.uCutoff, tone.cutoff);
+		gl.uniform1f(this.uniforms.uDenoise, tone.denoise);
+		gl.uniform1f(this.uniforms.uFeather, tone.feather);
+		gl.uniform1f(this.uniforms.uPolarity, tone.polarity);
+		gl.uniform1f(this.uniforms.uGamma, tone.gamma);
+		gl.uniform1f(this.uniforms.uContrast, tone.contrast);
+		gl.uniform3fv(this.uniforms.uInk, tone.ink);
+		gl.uniform3fv(this.uniforms.uInkHi, tone.inkHi);
+		gl.uniform3fv(this.uniforms.uPaper, tone.paper);
+		gl.uniform3fv(this.uniforms.uGlow, tone.glow);
+		gl.uniform1f(this.uniforms.uPaletteMix, tone.paletteMix);
+		gl.uniform1f(this.uniforms.uShape, tone.dotShape);
+		gl.uniform1f(this.uniforms.uBloom, tone.bloom);
+		gl.uniform1f(this.uniforms.uCrosshatch, tone.crosshatch);
 
 		// Intro wipe. Read BEFORE the draw so this frame paints the current progress,
 		// and note it must be sampled every frame while running — see the pump in
@@ -1667,17 +1210,8 @@ export class DottedGridElement extends HTMLElement {
 		// the transition, so the clip being replaced keeps moving while it is blended
 		// out — the whole point of xfade-live. (The frozen path uploaded once, at
 		// beginTransition, and this block is skipped.)
-		const prevVideo = this.prevVideo;
-		if (
-			xfade < 1 &&
-			prevVideo &&
-			prevVideo.readyState >= 2 &&
-			prevVideo.videoWidth > 0
-		) {
-			gl.activeTexture(gl.TEXTURE1);
-			gl.bindTexture(gl.TEXTURE_2D, this.prevTexture);
-			gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, prevVideo);
-			gl.activeTexture(gl.TEXTURE0);
+		if (xfade < 1 && this.prevVideo) {
+			this.upload(gl.TEXTURE1, this.prevTexture, this.prevVideo);
 		}
 
 		this.uploadReveal(gl, dpr);
@@ -1694,6 +1228,25 @@ export class DottedGridElement extends HTMLElement {
 		// textureReady flips above): the CSS fade is keyed off this, and starting it
 		// a frame early would fade in an empty canvas.
 		this.announceReady();
+	}
+
+	/**
+	 * Upload a video's current frame into `texture` on texture `unit`, leaving
+	 * unit 0 active afterwards. Returns false (and touches nothing) when the
+	 * video has no decodable frame yet. The one place frames reach the GPU: the
+	 * live clip each draw, the outgoing clip during a live transition, and the
+	 * outgoing clip's still at the start of a frozen one.
+	 */
+	private upload(unit: number, texture: WebGLTexture | null, video: HTMLVideoElement): boolean {
+		const gl = this.gl;
+		if (!gl || !texture) return false;
+		if (video.readyState < 2 /* HAVE_CURRENT_DATA */ || video.videoWidth === 0) return false;
+		gl.activeTexture(unit);
+		gl.bindTexture(gl.TEXTURE_2D, texture);
+		gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+		gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, video);
+		gl.activeTexture(gl.TEXTURE0);
+		return true;
 	}
 
 	/**
@@ -1770,7 +1323,7 @@ export class DottedGridElement extends HTMLElement {
 		gl.uniform1f(this.uniforms.uTime, now / 1000);
 		gl.uniform1f(
 			this.uniforms.uRevealBoost,
-			Math.min(1, this.numZero("reveal-boost", DEFAULTS.revealBoost))
+			Math.min(1, this.num("reveal-boost", DEFAULTS.revealBoost, true))
 		);
 	}
 
@@ -1778,17 +1331,6 @@ export class DottedGridElement extends HTMLElement {
 
 	private resolveSrc(): string {
 		return this.getAttribute("src") || "";
-	}
-
-	/** Resolve `dot-shape` to its shader enum (0 square / 1 circle / 2 morph).
-	 * Accepts the named strings or a raw 0/1/2 (the playground slider). */
-	private shape(): number {
-		const raw = this.getAttribute("dot-shape");
-		if (raw === null) return DEFAULTS.dotShape;
-		const named = DOT_SHAPES[raw.trim().toLowerCase()];
-		if (named !== undefined) return named;
-		const n = Number.parseFloat(raw);
-		return Number.isFinite(n) ? Math.min(2, Math.max(0, Math.round(n))) : DEFAULTS.dotShape;
 	}
 
 	/**
@@ -1823,16 +1365,11 @@ export class DottedGridElement extends HTMLElement {
 
 		if (!gl || !this.prevTexture) return false;
 		if (!this.hasAttribute("xfade") || this.reducedMotion?.matches) return false;
-		if (!outgoing || outgoing.readyState < 2 || outgoing.videoWidth === 0) return false;
-
 		// Upload the outgoing frame once up front either way: the live path needs a
 		// valid second source on THIS frame too (its per-frame re-upload happens in
-		// render), and the frozen path needs exactly this one still.
-		gl.activeTexture(gl.TEXTURE1);
-		gl.bindTexture(gl.TEXTURE_2D, this.prevTexture);
-		gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
-		gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, outgoing);
-		gl.activeTexture(gl.TEXTURE0);
+		// render), and the frozen path needs exactly this one still. No frame to
+		// upload means no transition.
+		if (!outgoing || !this.upload(gl.TEXTURE1, this.prevTexture, outgoing)) return false;
 		this.xfadeHasPrev = true;
 		this.xfadeStart = performance.now();
 
@@ -1897,57 +1434,25 @@ export class DottedGridElement extends HTMLElement {
 	}
 
 	/**
-	 * The attribute to read for a tone setting: its `light-` variant when one is set
-	 * and the backdrop is light, else the plain one. Keyed on the RESOLVED backdrop
-	 * (not a theme class), so it holds for any consumer and flips with the same
-	 * cache refresh that re-tints the grid.
+	 * A numeric (non-tone) attribute, else `fallback`. By default it must be
+	 * positive (0 falls back); with `zero` it may be 0 and negatives read as 0,
+	 * for levers where 0 is a real setting (intro-delay="0", reveal-boost="0").
 	 */
-	private toneAttr(attr: string): string {
-		const light = `light-${attr}`;
-		if (!this.hasAttribute(light) || !this.colorCache) return attr;
-		const [r, g, b] = this.colorCache.bg;
-		return 0.299 * r + 0.587 * g + 0.114 * b > 0.5 ? light : attr;
-	}
-
-	private num(attr: string, fallback: number): number {
-		const raw = this.getAttribute(this.toneAttr(attr));
-		if (raw === null) return fallback;
-		const parsed = Number.parseFloat(raw);
-		return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
-	}
-
-	/** Like num() but allows 0 (and clamps negatives to 0). Used for levers where
-	 * zero is a valid setting, e.g. reveal-boost=0 (raw color, no ANSI snap). */
-	private numZero(attr: string, fallback: number): number {
-		const raw = this.getAttribute(this.toneAttr(attr));
-		if (raw === null) return fallback;
-		const parsed = Number.parseFloat(raw);
-		return Number.isFinite(parsed) ? Math.max(0, parsed) : fallback;
-	}
-
-	/**
-	 * Resolve a color to normalized RGB. Uses the attribute if set, else the
-	 * given CSS custom property from the cascade, else the hard fallback. Parsed
-	 * by round-tripping through the canvas 2D context so any CSS color works.
-	 */
-	private readColor(
-		attr: string,
-		cssVar: string,
-		fallback: [number, number, number]
-	): [number, number, number] {
-		let value = this.getAttribute(attr)?.trim();
-		if (!value) {
-			value = getComputedStyle(this).getPropertyValue(cssVar).trim();
-		}
-		if (!value) return fallback;
-		const rgb = parseCssColor(value);
-		return rgb ?? fallback;
+	private num(attr: string, fallback: number, zero = false): number {
+		const opts = zero ? { min: 0, clamp: true } : { min: 0, exclusiveMin: true };
+		return readNumber(this.getAttribute(attr), opts) ?? fallback;
 	}
 }
 
-// Shared 2D context for color parsing (created lazily, reused).
+// Shared 2D context for color parsing (created lazily, reused). Any CSS colour
+// syntax works, by round-tripping it through a 1px fill.
 let colorCtx: CanvasRenderingContext2D | null = null;
-function parseCssColor(value: string): [number, number, number] | null {
+function parseCssColor(value: string): RGB | null {
+	// A canvas silently ignores an invalid fillStyle, which would read back as
+	// black; reject it up front so a typo falls back instead of painting black.
+	if (typeof CSS !== "undefined" && CSS.supports && !CSS.supports("color", value)) {
+		return null;
+	}
 	if (!colorCtx) {
 		const c = document.createElement("canvas");
 		c.width = c.height = 1;

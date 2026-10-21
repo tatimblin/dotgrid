@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 /**
  * SHADER SOURCE HAZARDS.
  *
- * The GLSL in packages/dotted-grid lives inside a JS template literal, which makes
+ * The GLSL in packages/dotted-grid (src/shader.ts) lives inside a JS template literal, which makes
  * two ordinary-looking edits break the build in ways the symptom does not point at:
  *
  *   1. A BACKTICK anywhere in that string — including inside a `// comment`, which
@@ -21,14 +21,15 @@ import { readFileSync } from "node:fs";
  * both before the module is ever served.
  */
 
-const SRC = "packages/dotted-grid/src/index.ts";
+const SRC = "packages/dotted-grid/src/shader.ts";
+const OPEN = "export const FRAGMENT_SHADER = `";
 
 /** Extract the fragment-shader template literal's contents. */
 function shaderSource(): string {
 	const file = readFileSync(SRC, "utf8");
-	const open = file.indexOf("const fs = `");
+	const open = file.indexOf(OPEN);
 	expect(open, `could not find the fragment shader in ${SRC}`).toBeGreaterThan(-1);
-	const start = open + "const fs = `".length;
+	const start = open + OPEN.length;
 	const end = file.indexOf("`;", start);
 	expect(end, "fragment shader literal is unterminated").toBeGreaterThan(start);
 	return file.slice(start, end);

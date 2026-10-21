@@ -87,7 +87,10 @@ video-carousel {
 	/* Square by default; a consumer rounds it to its own frame's corner. */
 	border-radius: var(--vc-stage-radius, 0);
 	overflow: hidden;
-	background: var(--color-bg, #fff);
+	/* The colour fallbacks here and below are CSS system colours (Canvas,
+	   CanvasText, GrayText, LinkText), so a standalone carousel follows the
+	   page's color-scheme rather than pinning one theme's literals. */
+	background: var(--color-bg, Canvas);
 	/* Must stay in step with SWAP_MS in index.ts, which times how long the dip
 	   is held. Fallback for standalone use (see .vc__strip.is-settling). */
 	transition: opacity var(--duration-swap, 0.26s) var(--ease-reveal, ease);
@@ -346,21 +349,21 @@ video-carousel[caption-overlay] .vc__cap-run {
 	padding: var(--vc-cap-pad-y) var(--vc-cap-pad-x);
 	-webkit-box-decoration-break: clone;
 	box-decoration-break: clone;
-	background: var(--text-primary, var(--color-fg, #111));
-	color: var(--color-bg, #fff);
+	background: var(--text-primary, var(--color-fg, CanvasText));
+	color: var(--color-bg, Canvas);
 }
 /* The title is the caption's one accent: ink caps on the accent box, like the
    DS accent Pill (--on-accent is the ink that clears AA on it; white does not). */
 video-carousel[caption-overlay] .vc__cap-run--title {
-	background: var(--accent, #e5482d);
-	color: var(--on-accent, #111);
+	background: var(--accent, LinkText);
+	color: var(--on-accent, Canvas);
 }
 /* The second run — the place — steps down: the same hugging box, but in the
    page colour with the dim ink, so the title is the one inverted shape and the
    meta reads as its quieter footnote. Over lit dots the box still cuts it a clean
    ground; over the empty floor it simply merges with the page. */
 video-carousel[caption-overlay] .vc__cap-run--meta {
-	background: var(--color-bg, #fff);
+	background: var(--color-bg, Canvas);
 	color: var(--text-secondary, currentColor);
 }
 /* The fields take the run's size and ink (their Mono tones are for type on the
@@ -483,7 +486,7 @@ video-carousel[caption-overlay] .vc__cap-line:has(.vc__loc:empty) {
 	width: var(--vc-tick-len, 12px);
 	/* Hairlines in the quiet ink: the ruler is chrome, and the one lit thing on it
 	   is the accent marker. */
-		background: var(--text-tertiary, #8a8a8a);
+		background: var(--text-tertiary, GrayText);
 	/* Distance fade (JS) × the ruler's rest dim (above). */
 	opacity: calc(var(--vc-tick-op, 1) * var(--vc-ruler-dim, 1));
 	/* The magnification is a micro-transition: felt, not watched. */
@@ -496,7 +499,7 @@ video-carousel[caption-overlay] .vc__cap-line:has(.vc__loc:empty) {
    Still a hairline — rank is carried by length and tone, not weight. */
 .vc__tick--year {
 	width: var(--vc-tick-len, 22px);
-	background: var(--text-secondary, #bdbdbd);
+	background: var(--text-secondary, GrayText);
 }
 
 /* Small year text beside a year tick — an instrument marking, so it takes the
@@ -514,7 +517,7 @@ video-carousel[caption-overlay] .vc__cap-line:has(.vc__loc:empty) {
 	font-variant-numeric: tabular-nums;
 	letter-spacing: var(--tracking-caps, 0.14em);
 	text-transform: uppercase;
-	color: var(--text-tertiary, #8a8a8a);
+	color: var(--text-tertiary, GrayText);
 	white-space: nowrap;
 }
 
@@ -530,7 +533,7 @@ video-carousel[caption-overlay] .vc__cap-line:has(.vc__loc:empty) {
 	transform: translateY(-50%);
 	height: 1px;
 	width: var(--vc-max-tick);
-	background: var(--accent, #e5482d);
+	background: var(--accent, LinkText);
 	pointer-events: none;
 }
 .vc__marker::before {
@@ -722,7 +725,7 @@ video-carousel[ruler-baseline="bottom"] .vc__ruler--horizontal .vc__marker::befo
 	padding: 0;
 	border: 0;
 	border-radius: 0;
-	background: var(--text-tertiary, #8a8a8a);
+	background: var(--text-tertiary, GrayText);
 	cursor: pointer;
 	appearance: none;
 	-webkit-appearance: none;

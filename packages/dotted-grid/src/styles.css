@@ -4,7 +4,11 @@ dotted-grid {
 	width: 100%;
 	/* No-JS / pre-hydration fallback height; override per-instance. */
 	height: var(--dotted-grid-height, 100vh);
-	background: var(--dotted-grid-bg, var(--color-bg, #000));
+	/* The colour the shader paints as its paper, so the box matches the canvas
+	   before the first frame: the same chain as resolveTone (tone.ts) — the
+	   `paper` attribute (which the element mirrors onto --dg-paper), then
+	   --dg-paper, then --color-bg. */
+	background: var(--dg-paper, var(--color-bg, #000));
 	overflow: hidden;
 }
 
@@ -24,7 +28,7 @@ dotted-grid canvas {
 
    Costs nothing measurable: a <canvas> is not a Largest-Contentful-Paint
    candidate, so this delays no reported metric — and the host keeps painting
-   --dotted-grid-bg throughout, so the box is never empty.
+   its paper throughout, so the box is never empty.
 
    Longhands, not the `transition` shorthand: a shorthand carrying an unresolved
    custom property is invalid-at-computed-value and would drop the whole
