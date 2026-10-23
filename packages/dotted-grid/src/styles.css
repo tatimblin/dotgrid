@@ -20,6 +20,16 @@ dotted-grid canvas {
 	height: 100%;
 }
 
+/* NOTHING BEFORE THE FIRST DRAW. The context is opaque (alpha:false), and an
+   opaque canvas that has not drawn yet composites as solid BLACK — a black box
+   over the host's paper for as long as the video takes to decode. Hidden until
+   the element marks `data-ready` (after its first real draw), whatever the
+   entrance: with `intro` that first draw is the empty grid, so showing it is
+   seamless; without, the fade below takes over. */
+dotted-grid:not([data-ready]) canvas {
+	visibility: hidden;
+}
+
 /* FIRST-FRAME FADE. Until a frame is decoded and drawn there is nothing in the
    canvas, and the halftone used to SNAP to full strength the moment one arrived.
    Fade it up over the host's background plate instead, so the effect resolves out
