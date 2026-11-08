@@ -132,13 +132,23 @@ The clip list is authored in light DOM, so the dates and captions are readable b
 
 Attributes: `ruler-side` (`left` | `right`), `orientation` (`vertical` | `horizontal`; unset flips to horizontal at 640px and below), `fill`, `scene`, `caption-overlay`, `ruler-baseline` (`top` | `bottom`), and `tick-src` (URL of a tick sound; unset means silent; muted while `localStorage.sound === "off"`, re-read on a `soundchange` event).
 
-Geometry knobs are `--vc-*` custom properties on `:root`; see [`styles.css`](packages/video-carousel/src/styles.css). The carousel publishes `video-carousel:ready` and `video-carousel:metrics` events.
+Geometry knobs are `--vc-*` custom properties on `:root`; see [`styles.css`](packages/video-carousel/src/styles.css).
+
+Fields: on each selection the carousel writes the clip's text into the first `[data-vc-desc]`, `[data-vc-loc]` and `[data-vc-date]` it finds anywhere in its light DOM. All three are optional.
+
+Events, all bubbling:
+
+| Event | `detail` | Fires |
+|---|---|---|
+| `video-carousel:ready` | none | The ruler has been built. |
+| `video-carousel:metrics` | `{ bottomUiExtent, rulerExtent }` | The measured bottom-UI extent changed. |
+| `video-carousel:change` | `{ index, clip, userDriven, changed }` | After every selection, once the fields are written. `userDriven` is true for a drag, tap or key. `changed` is false when a clip re-selected itself, as on the initial select at connect. |
 
 ## Develop
 
 ```sh
 bun install
-bun run test        # bun unit tests: tone resolution, shader-source hazards
+bun run test        # bun unit tests: tone resolution, shader-source hazards, carousel input
 bun run typecheck
 bun run build       # packages/*/dist: index.js, *.d.ts, styles.css
 bun run demo        # Vite demo at demo/ (run build first; it imports dist/ like a consumer)

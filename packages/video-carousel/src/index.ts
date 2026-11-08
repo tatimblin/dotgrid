@@ -53,13 +53,21 @@ function smoothstep(t: number): number {
 	return c * c * (3 - 2 * c);
 }
 
-interface Clip {
+export interface Clip {
 	src: string; // H.264 mp4 (universal fallback)
 	srcWebm: string; // optional AV1/VP9 webm, preferred where playable ("" = none)
 	desc: string;
 	loc: string;
 	date: string;
 	alt: string;
+}
+
+/** Detail of the bubbling `video-carousel:change` event. */
+export interface VideoCarouselChangeDetail {
+	index: number;
+	clip: Readonly<Clip>;
+	userDriven: boolean; // a drag, tap or key; false for autoplay and the initial select
+	changed: boolean; // false when the clip re-selected itself
 }
 
 /**
@@ -91,6 +99,7 @@ export class VideoCarouselElement extends HTMLElement {
 	private ruler: HTMLElement | null = null;
 	private descEl: HTMLElement | null = null;
 	private locEl: HTMLElement | null = null;
+	private dateEl: HTMLElement | null = null;
 	private caption: HTMLElement | null = null;
 	private stage: HTMLElement | null = null;
 	private strip: HTMLElement | null = null;
@@ -156,6 +165,7 @@ export class VideoCarouselElement extends HTMLElement {
 		this.stage = this.querySelector<HTMLElement>("[data-vc-stage]");
 		this.descEl = this.querySelector<HTMLElement>("[data-vc-desc]");
 		this.locEl = this.querySelector<HTMLElement>("[data-vc-loc]");
+		this.dateEl = this.querySelector<HTMLElement>("[data-vc-date]");
 		this.caption = this.querySelector<HTMLElement>(".vc__caption");
 		if (!this.grid || !this.ruler) return;
 
@@ -623,6 +633,7 @@ export class VideoCarouselElement extends HTMLElement {
 
 		if (this.descEl) this.descEl.textContent = clip.desc;
 		if (this.locEl) this.locEl.textContent = clip.loc;
+		if (this.dateEl) this.dateEl.textContent = clip.date;
 
 		this.ruler?.setAttribute("aria-valuenow", String(index));
 		this.ruler?.setAttribute(
@@ -633,6 +644,11 @@ export class VideoCarouselElement extends HTMLElement {
 		// Let layout settle on the first paint before measuring the ruler height.
 		if (initial) requestAnimationFrame(() => this.scrollToClip(index, false));
 		else this.scrollToClip(index, true);
+
+		const detail: VideoCarouselChangeDetail = { index, clip, userDriven, changed };
+		this.dispatchEvent(
+			new CustomEvent("video-carousel:change", { bubbles: true, detail })
+		);
 	}
 
 	/**
