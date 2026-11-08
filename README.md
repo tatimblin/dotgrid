@@ -143,6 +143,10 @@ Events, all bubbling:
 | `video-carousel:ready` | none | The ruler has been built. |
 | `video-carousel:metrics` | `{ bottomUiExtent, rulerExtent }` | The measured bottom-UI extent changed. |
 | `video-carousel:change` | `{ index, clip, userDriven, changed }` | After every selection, once the fields are written. `userDriven` is true for a drag, tap or key. `changed` is false when a clip re-selected itself, as on the initial select at connect. |
+| `video-carousel:scrubstart` | none | A press on the ruler has travelled past the 4px slop. A tap never scrubs. |
+| `video-carousel:scrubend` | `{ cancelled }` | A scrub finished, after its final selection. `cancelled` is true when the browser took the gesture. |
+
+A press that the browser cancels selects nothing: the strip returns to the clip already showing, including one a scrub had reached before the cancel. A horizontal ruler sets `touch-action: pan-y`, so a vertical pan starting on it scrolls the page and a horizontal drag scrubs. If a clip ends during a press, the carousel advances when the press ends, unless the press landed on a different clip.
 
 ## Develop
 

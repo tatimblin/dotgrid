@@ -84,10 +84,14 @@ class FakeElement extends EventTarget {
 
 let frames: Array<() => void> = [];
 const flush = () => {
-	const run = frames;
-	frames = [];
-	run.forEach((f) => f());
+	// A frame can queue another: the initial select re-centres, which refreshes.
+	while (frames.length) {
+		const run = frames;
+		frames = [];
+		run.forEach((f) => f());
+	}
 };
+let clock = 0; // each read is a second later, so the tick-sound throttle never bites
 
 Object.assign(globalThis, {
 	HTMLElement: FakeElement,
@@ -105,6 +109,7 @@ Object.assign(globalThis, {
 		head: new FakeElement(),
 	},
 	localStorage: { getItem: () => null },
+	performance: { now: () => (clock += 1000) },
 	requestAnimationFrame: (f: () => void) => frames.push(f),
 	cancelAnimationFrame() {},
 	ResizeObserver: class {
@@ -270,5 +275,236 @@ describe("video-carousel:change", () => {
 			userDriven: false,
 			changed: true,
 		});
+	});
+});
+
+describe("pressing the ruler", () => {
+	// February is half a cadence step along, after the strip's one padding tick.
+	const resting = CENTER - 1.5 * GAP;
+
+	test("a tap never scrubs, and selects the clip under it", () => {
+		const c = mount();
+		c.pointer("pointerdown", CENTER + 2 * GAP);
+		c.pointer("pointermove", CENTER + 2 * GAP + 3);
+		c.pointer("pointerup", CENTER + 2 * GAP + 3);
+		expect(c.order()).toEqual(["change", "change"]);
+		expect(c.changes()[1].detail).toMatchObject({
+			index: 2,
+			userDriven: true,
+			changed: true,
+		});
+	});
+
+	test("movement inside the slop leaves the strip alone", () => {
+		const c = mount();
+		expect(c.offset()).toBe(resting);
+		c.pointer("pointerdown", CENTER);
+		c.pointer("pointermove", CENTER - 4);
+		expect(c.offset()).toBe(resting);
+		expect(c.ruler.classes.has("is-dragging")).toBe(false);
+		expect(c.order()).toEqual(["change"]);
+	});
+
+	test("a scrub announces start, then its selections, then end", () => {
+		const c = mount({ "tick-src": "tick.wav" });
+		c.pointer("pointerdown", CENTER);
+		c.pointer("pointermove", CENTER - 5);
+		expect(c.ruler.classes.has("is-dragging")).toBe(true);
+		c.pointer("pointermove", CENTER - 10);
+		c.pointer("pointermove", CENTER - 5 - GAP - 2);
+		expect(c.index()).toBe(1);
+		c.pointer("pointerup", CENTER - 5 - GAP - 2);
+		expect(c.order()).toEqual([
+			"change", // connect
+			"scrubstart",
+			"change", // the live crossing
+			"change", // the final select, on the same clip
+			"scrubend",
+		]);
+		const [, start, live, final, end] = c.events;
+		expect(start.bubbles).toBe(true);
+		expect(live.detail).toMatchObject({ index: 1, userDriven: true, changed: true });
+		expect(final.detail).toMatchObject({ index: 1, userDriven: true, changed: false });
+		expect(end.bubbles).toBe(true);
+		expect(end.detail).toEqual({ cancelled: false });
+		expect(ticks).toBe(1);
+	});
+
+	test("the strip tracks the pointer from where the scrub began", () => {
+		const c = mount();
+		c.pointer("pointerdown", CENTER);
+		c.pointer("pointermove", CENTER - 6);
+		expect(c.offset()).toBe(resting);
+		c.pointer("pointermove", CENTER - 9);
+		expect(c.offset()).toBe(resting - 3);
+	});
+
+	test("a vertical pan doesn't scrub and the cancel selects nothing", () => {
+		const c = mount({ "tick-src": "tick.wav" });
+		const src = c.grid.getAttribute("src");
+		c.pointer("pointerdown", CENTER + 2 * GAP, 10);
+		c.pointer("pointermove", CENTER + 2 * GAP + 1, 30);
+		c.pointer("pointercancel", 0, 60);
+		expect(c.order()).toEqual(["change"]); // connect only
+		expect(c.index()).toBe(0);
+		expect(c.grid.getAttribute("src")).toBe(src);
+		expect(c.replays.count).toBe(0);
+		expect(c.offset()).toBe(resting);
+		expect(ticks).toBe(0);
+	});
+
+	test("a pan that wanders past the slop still doesn't scrub", () => {
+		const c = mount();
+		c.pointer("pointerdown", CENTER, 10);
+		c.pointer("pointermove", CENTER - 8, 40);
+		expect(c.order()).toEqual(["change"]);
+		expect(c.offset()).toBe(resting);
+	});
+
+	test("a vertical ruler scrubs along Y and has no cross-axis gate", () => {
+		const c = mount({ orientation: "vertical" });
+		c.pointer("pointerdown", CENTER, CENTER);
+		c.pointer("pointermove", CENTER + 40, CENTER - 6);
+		expect(c.order()).toEqual(["change", "scrubstart"]);
+	});
+
+	test("cancelling a scrub restores the strip and selects nothing more", () => {
+		const c = mount({ "tick-src": "tick.wav" });
+		c.pointer("pointerdown", CENTER);
+		c.pointer("pointermove", CENTER - 5);
+		c.pointer("pointermove", CENTER - 5 - GAP - 8); // past clip 1, short of clip 2
+		expect(c.index()).toBe(1);
+		const before = c.changes().length;
+		c.pointer("pointercancel", 0);
+		expect(c.changes()).toHaveLength(before);
+		expect(c.index()).toBe(1);
+		expect(c.offset()).toBe(resting - GAP);
+		expect(c.ruler.classes.has("is-dragging")).toBe(false);
+		expect(c.events.at(-1)).toMatchObject({
+			type: "scrubend",
+			bubbles: true,
+			detail: { cancelled: true },
+		});
+		expect(ticks).toBe(1); // the crossing, and nothing for the cancel
+	});
+
+	test("cancel leaves the pointer free for the next press", () => {
+		const c = mount();
+		c.pointer("pointerdown", CENTER);
+		c.pointer("pointercancel", 0);
+		expect(c.ruler.captured.size).toBe(0);
+		c.pointer("pointerdown", CENTER + GAP);
+		c.pointer("pointerup", CENTER + GAP);
+		expect(c.index()).toBe(1);
+	});
+
+	test("a second finger neither moves nor ends the press", () => {
+		const c = mount();
+		c.pointer("pointerdown", CENTER);
+		c.pointer("pointerdown", CENTER + 50, 10, { pointerId: 2, isPrimary: false });
+		c.pointer("pointermove", CENTER - 40, 10, { pointerId: 2, isPrimary: false });
+		c.pointer("pointerup", CENTER - 40, 10, { pointerId: 2, isPrimary: false });
+		expect(c.order()).toEqual(["change"]);
+		c.pointer("pointerup", CENTER);
+		expect(c.order()).toEqual(["change", "change"]);
+	});
+
+	test("a press whose pointerup went missing doesn't wedge the ruler", () => {
+		const c = mount();
+		c.pointer("pointerdown", CENTER);
+		c.pointer("pointermove", CENTER - 6);
+		c.pointer("pointerdown", CENTER + GAP); // no pointerup came
+		expect(c.events.at(-1)).toMatchObject({
+			type: "scrubend",
+			detail: { cancelled: true },
+		});
+		c.pointer("pointerup", CENTER + GAP);
+		expect(c.index()).toBe(1);
+	});
+});
+
+describe("a clip ending during a press", () => {
+	test("with no press, advances at once", () => {
+		const c = mount();
+		c.ended();
+		expect(c.index()).toBe(1);
+	});
+
+	test("waits for the press, and a cancel still advances, silently", () => {
+		const c = mount({ "tick-src": "tick.wav" });
+		c.pointer("pointerdown", CENTER, 10);
+		c.ended();
+		expect(c.index()).toBe(0);
+		c.pointer("pointermove", CENTER, 40);
+		c.pointer("pointercancel", 0, 60);
+		expect(c.index()).toBe(1);
+		expect(c.changes().at(-1)!.detail).toMatchObject({
+			index: 1,
+			userDriven: false,
+			changed: true,
+		});
+		expect(c.changes()).toHaveLength(2);
+		expect(ticks).toBe(0);
+	});
+
+	test("releasing on the clip that ended advances instead of replaying it", () => {
+		const c = mount();
+		c.pointer("pointerdown", CENTER);
+		c.ended();
+		c.pointer("pointerup", CENTER);
+		expect(c.index()).toBe(1);
+		expect(c.replays.count).toBe(0);
+		expect(c.changes().at(-1)!.detail.userDriven).toBe(false);
+	});
+
+	test("a scrub cancelled over the ended clip advances before scrubend", () => {
+		const c = mount();
+		c.pointer("pointerdown", CENTER);
+		c.pointer("pointermove", CENTER - 5);
+		c.ended();
+		c.pointer("pointercancel", 0);
+		expect(c.index()).toBe(1);
+		expect(c.order().slice(-2)).toEqual(["change", "scrubend"]);
+	});
+
+	test("tapping a different clip doesn't skip past it", () => {
+		const c = mount();
+		c.pointer("pointerdown", CENTER + 2 * GAP);
+		c.ended();
+		c.pointer("pointerup", CENTER + 2 * GAP);
+		expect(c.index()).toBe(2);
+		expect(c.changes()).toHaveLength(2);
+	});
+
+	test("an end from before the scrub moved on is forgotten", () => {
+		const c = mount();
+		c.pointer("pointerdown", CENTER);
+		c.ended();
+		c.pointer("pointermove", CENTER - 5);
+		c.pointer("pointermove", CENTER - 5 - GAP - 2); // now on clip 1
+		c.pointer("pointercancel", 0);
+		expect(c.index()).toBe(1);
+	});
+
+	test("doesn't carry over to the next press", () => {
+		const c = mount();
+		c.pointer("pointerdown", CENTER);
+		c.ended();
+		c.pointer("pointerup", CENTER); // advanced to clip 1
+		c.pointer("pointerdown", CENTER);
+		c.pointer("pointerup", CENTER);
+		expect(c.index()).toBe(1);
+	});
+});
+
+const css = await Bun.file(new URL("./styles.css", import.meta.url)).text();
+
+describe("styles", () => {
+	const rule = (sel: string) =>
+		new RegExp(`(?:^|\\n)${sel.replace(".", "\\.")} \\{([^}]*)\\}`).exec(css)?.[1] ?? "";
+
+	test("only the horizontal ruler shares its gesture with the page", () => {
+		expect(rule(".vc__ruler--horizontal")).toContain("touch-action: pan-y");
+		expect(rule(".vc__ruler")).toContain("touch-action: none");
 	});
 });
