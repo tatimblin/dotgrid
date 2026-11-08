@@ -130,15 +130,29 @@ The clip list is authored in light DOM, so the dates and captions are readable b
 
 `<video-carousel>` doesn't import `<dotted-grid>`. It drives the one in its markup, so install and import both. Give the grid `no-loop` so the carousel advances when a clip ends.
 
-Attributes: `ruler-side` (`left` | `right`), `orientation` (`vertical` | `horizontal`; unset flips to horizontal at 640px and below), `fill`, `scene`, `caption-overlay`, `ruler-baseline` (`top` | `bottom`), and `tick-src` (URL of a tick sound; unset means silent; muted while `localStorage.sound === "off"`, re-read on a `soundchange` event).
+Attributes: `ruler-side` (`left` | `right`), `orientation` (`vertical` | `horizontal`; unset flips to horizontal at 640px and below), `fill`, `scene`, `caption-overlay`, `ruler-baseline` (`top` | `bottom`), `axis` (`even` gives one tick per clip at a 13px pitch, ignoring the dates and with no year labels; the horizontal ruler still reserves `--vc-ruler-h`; unset places ticks by date), and `tick-src` (URL of a tick sound; unset means silent; muted while `localStorage.sound === "off"`, re-read on a `soundchange` event).
 
-Geometry knobs are `--vc-*` custom properties on `:root`; see [`styles.css`](packages/video-carousel/src/styles.css). The carousel publishes `video-carousel:ready` and `video-carousel:metrics` events.
+Geometry knobs are `--vc-*` custom properties on `:root`; see [`styles.css`](packages/video-carousel/src/styles.css).
+
+Fields: on each selection the carousel writes the clip's text into the first `[data-vc-desc]`, `[data-vc-loc]` and `[data-vc-date]` it finds anywhere in its light DOM. All three are optional.
+
+Events, all bubbling:
+
+| Event | `detail` | Fires |
+|---|---|---|
+| `video-carousel:ready` | none | The ruler has been built. |
+| `video-carousel:metrics` | `{ bottomUiExtent, rulerExtent }` | The measured bottom-UI extent changed. |
+| `video-carousel:change` | `{ index, clip, userDriven, changed }` | After every selection, once the fields are written. `userDriven` is true for a drag, tap or key. `changed` is false when a clip re-selected itself, as on the initial select at connect. |
+| `video-carousel:scrubstart` | none | A press on the ruler has travelled past the 4px slop. A tap never scrubs. |
+| `video-carousel:scrubend` | `{ cancelled }` | A scrub finished, after its final selection. `cancelled` is true when the browser took the gesture. |
+
+A press that the browser cancels selects nothing: the strip returns to the clip already showing, including one a scrub had reached before the cancel. A horizontal ruler sets `touch-action: pan-y`, so a vertical pan starting on it scrolls the page and a horizontal drag scrubs. If a clip ends during a press, the carousel advances when the press ends, unless the press landed on a different clip.
 
 ## Develop
 
 ```sh
 bun install
-bun run test        # bun unit tests: tone resolution, shader-source hazards
+bun run test        # bun unit tests: tone resolution, shader-source hazards, carousel input
 bun run typecheck
 bun run build       # packages/*/dist: index.js, *.d.ts, styles.css
 bun run demo        # Vite demo at demo/ (run build first; it imports dist/ like a consumer)

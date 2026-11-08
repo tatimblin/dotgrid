@@ -53,13 +53,21 @@ function smoothstep(t: number): number {
 	return c * c * (3 - 2 * c);
 }
 
-interface Clip {
+export interface Clip {
 	src: string; // H.264 mp4 (universal fallback)
 	srcWebm: string; // optional AV1/VP9 webm, preferred where playable ("" = none)
 	desc: string;
 	loc: string;
 	date: string;
 	alt: string;
+}
+
+/** Detail of the bubbling `video-carousel:change` event. */
+export interface VideoCarouselChangeDetail {
+	index: number;
+	clip: Readonly<Clip>;
+	userDriven: boolean; // a drag, tap or key; false for autoplay and the initial select
+	changed: boolean; // false when the clip re-selected itself
 }
 
 /**
@@ -73,6 +81,7 @@ interface Clip {
  * Ticks sit on a continuous time axis at a fixed cadence (TICKS_PER_YEAR), so
  * clips generally land mid-tick or on alternating ticks — intended. Ticks that
  * fall on a January (a whole year) are longer and carry the year in small text.
+ * `axis="even"` swaps that for one tick per clip at the same pitch, with no years.
  *
  * The clip list is authored in the light DOM by the Astro wrapper: the ruler
  * (`[data-vc-ruler]`) holds one `<button class="vc__tick vc__tick--major">` per
@@ -91,6 +100,7 @@ export class VideoCarouselElement extends HTMLElement {
 	private ruler: HTMLElement | null = null;
 	private descEl: HTMLElement | null = null;
 	private locEl: HTMLElement | null = null;
+	private dateEl: HTMLElement | null = null;
 	private caption: HTMLElement | null = null;
 	private stage: HTMLElement | null = null;
 	private strip: HTMLElement | null = null;
@@ -119,10 +129,13 @@ export class VideoCarouselElement extends HTMLElement {
 	private swapTimer: number | null = null;
 	private settleTimer: number | null = null;
 
-	private dragging = false;
-	private dragStart = 0; // pointer coord (main axis) at drag start (client px)
-	private dragStartOffset = 0; // strip offset at drag start (px)
-	private dragMoved = false; // pointer moved past the tap threshold since down
+	private pressing = false; // a pointer is down on the ruler
+	private pressPointer = -1; // that pointer's id
+	private scrubbing = false; // the press has passed TAP_SLOP and owns the strip
+	private dragStart = 0; // pointer coord (main axis) at press, then at scrub start (client px)
+	private dragCrossStart = 0; // pointer coord (cross axis) at press (client px)
+	private dragStartOffset = 0; // strip offset at scrub start (px)
+	private endedDuringPress = false; // the clip ended under a press; advance when it lets go
 
 	private tickSrc = ""; // tick-sound asset URL (from the `tick-src` attr); "" = off
 	private muted = false; // reflects the persisted `sound` preference
@@ -156,6 +169,7 @@ export class VideoCarouselElement extends HTMLElement {
 		this.stage = this.querySelector<HTMLElement>("[data-vc-stage]");
 		this.descEl = this.querySelector<HTMLElement>("[data-vc-desc]");
 		this.locEl = this.querySelector<HTMLElement>("[data-vc-loc]");
+		this.dateEl = this.querySelector<HTMLElement>("[data-vc-date]");
 		this.caption = this.querySelector<HTMLElement>(".vc__caption");
 		if (!this.grid || !this.ruler) return;
 
@@ -237,8 +251,12 @@ export class VideoCarouselElement extends HTMLElement {
 
 		// Advance when the current clip finishes (dotted-grid re-broadcasts the
 		// video's `ended` as this bubbling event, thanks to the `no-loop` attr).
+		//
+		// The grid announces a clip's end once per buffer, so one that lands during
+		// a press has to be remembered or autoplay parks on the last frame for good.
 		const onEnded = () => {
-			if (!this.dragging) this.select(this.current + 1);
+			if (this.pressing) this.endedDuringPress = true;
+			else this.select(this.current + 1);
 		};
 		this.addEventListener("dotted-grid:ended", onEnded as EventListener);
 		this.listeners.push(() =>
@@ -267,6 +285,9 @@ export class VideoCarouselElement extends HTMLElement {
 		this.swapTimer = null;
 		if (this.settleTimer !== null) clearTimeout(this.settleTimer);
 		this.settleTimer = null;
+		this.pressing = false;
+		this.scrubbing = false;
+		this.endedDuringPress = false;
 		this.resizeObserver?.disconnect();
 		this.resizeObserver = null;
 		this.listeners.forEach((off) => off());
@@ -334,28 +355,39 @@ export class VideoCarouselElement extends HTMLElement {
 		ruler.setAttribute("aria-valuemax", String(this.clips.length - 1));
 		ruler.classList.toggle("vc__ruler--horizontal", this.horizontal);
 
-		// Clip times: parse dates; if any fails, fall back to synthetic spacing so
-		// the ruler still renders sensibly.
-		this.clipTimes = this.clips.map((c) => parseClipTime(c.date));
-		if (this.clipTimes.some((t) => !Number.isFinite(t))) {
+		// `axis="even"`: one tick per clip at an even pitch, ignoring the dates, for
+		// lists too bunched in time to scrub. Each clip takes the next cadence step,
+		// so every position calculation below works unchanged.
+		const even = this.getAttribute("axis") === "even";
+		let tickCount: number;
+		if (even) {
 			this.clipTimes = this.clips.map((_, i) => i * STEP_YEARS);
+			this.axisStart = 0;
+			tickCount = this.clips.length;
+		} else {
+			// Clip times: parse dates; if any fails, fall back to synthetic spacing so
+			// the ruler still renders sensibly.
+			this.clipTimes = this.clips.map((c) => parseClipTime(c.date));
+			if (this.clipTimes.some((t) => !Number.isFinite(t))) {
+				this.clipTimes = this.clips.map((_, i) => i * STEP_YEARS);
+			}
+
+			// Dates are only month-precise, so runs of clips sharing a month (e.g. four
+			// "April 2025" clips) collapse onto ONE strip offset — dragging can't land on
+			// the inner ones and the selection sits dead across a run, then jumps. Nudge
+			// each same-time run into distinct, still-chronological sub-positions: keep
+			// the first member on its true time and fan the rest forward across a slice of
+			// the room before the next distinct date (capped so they stay within a tick).
+			this.spreadSameTimeClips();
+
+			// Snap the axis to whole cadence steps and pad one step on each end so the
+			// first/last clip is never flush against a strip edge.
+			const tMin = Math.min(...this.clipTimes);
+			const tMax = Math.max(...this.clipTimes);
+			this.axisStart = Math.floor(tMin / STEP_YEARS) * STEP_YEARS - STEP_YEARS;
+			const axisEnd = Math.ceil(tMax / STEP_YEARS) * STEP_YEARS + STEP_YEARS;
+			tickCount = Math.round((axisEnd - this.axisStart) / STEP_YEARS) + 1;
 		}
-
-		// Dates are only month-precise, so runs of clips sharing a month (e.g. four
-		// "April 2025" clips) collapse onto ONE strip offset — dragging can't land on
-		// the inner ones and the selection sits dead across a run, then jumps. Nudge
-		// each same-time run into distinct, still-chronological sub-positions: keep
-		// the first member on its true time and fan the rest forward across a slice of
-		// the room before the next distinct date (capped so they stay within a tick).
-		this.spreadSameTimeClips();
-
-		// Snap the axis to whole cadence steps and pad one step on each end so the
-		// first/last clip is never flush against a strip edge.
-		const tMin = Math.min(...this.clipTimes);
-		const tMax = Math.max(...this.clipTimes);
-		this.axisStart = Math.floor(tMin / STEP_YEARS) * STEP_YEARS - STEP_YEARS;
-		const axisEnd = Math.ceil(tMax / STEP_YEARS) * STEP_YEARS + STEP_YEARS;
-		const tickCount = Math.round((axisEnd - this.axisStart) / STEP_YEARS) + 1;
 
 		this.strip = document.createElement("div");
 		this.strip.className = "vc__strip";
@@ -364,7 +396,8 @@ export class VideoCarouselElement extends HTMLElement {
 		this.tickTimes = [];
 		for (let k = 0; k < tickCount; k++) {
 			const time = this.axisStart + k * STEP_YEARS;
-			const isYear = Math.abs(time - Math.round(time)) < 1e-6;
+			// An even axis has no calendar, so a year label would misplace.
+			const isYear = !even && Math.abs(time - Math.round(time)) < 1e-6;
 			const tick = document.createElement("span");
 			tick.className = isYear ? "vc__tick vc__tick--year" : "vc__tick";
 			tick.setAttribute("aria-hidden", "true");
@@ -414,22 +447,63 @@ export class VideoCarouselElement extends HTMLElement {
 		// Pointer down/move/up owns BOTH tap and drag (no separate click handler, so
 		// a drag's synthetic click can't fight the release snap). A drag scrolls the
 		// strip and settles on the clip under the center marker; a tap (no movement
-		// past TAP_SLOP) selects the clip nearest the tapped position.
+		// past TAP_SLOP) selects the clip nearest the tapped position. A
+		// `pointercancel` means the browser took the gesture (a page scroll starting
+		// on a horizontal ruler), so it selects nothing.
 		const TAP_SLOP = 4; // px of movement below which a gesture counts as a tap
-		// Pointer coord along the ruler's main axis (X when horizontal, else Y).
+		// Pointer coord along the ruler's main axis (X when horizontal, else Y), and
+		// across it.
 		const coordOf = (e: PointerEvent) => (this.horizontal ? e.clientX : e.clientY);
+		const crossOf = (e: PointerEvent) => (this.horizontal ? e.clientY : e.clientX);
+		const announce = (name: string, detail?: { cancelled: boolean }) =>
+			this.dispatchEvent(
+				new CustomEvent(`video-carousel:${name}`, { bubbles: true, detail })
+			);
+		// Clear the press; true if it had become a scrub.
+		const release = () => {
+			const scrubbed = this.scrubbing;
+			this.pressing = false;
+			this.scrubbing = false;
+			ruler.classList.remove("is-dragging");
+			try {
+				ruler.releasePointerCapture(this.pressPointer);
+			} catch {
+				/* pointer may already be released */
+			}
+			return scrubbed;
+		};
+		const abortPress = () => {
+			const scrubbed = release();
+			if (this.endedDuringPress) this.select(this.current + 1);
+			else if (scrubbed) this.scrollToClip(this.current, true);
+			if (scrubbed) announce("scrubend", { cancelled: true });
+		};
 		const onPointerDown = (e: PointerEvent) => {
-			this.dragging = true;
-			this.dragMoved = false;
+			if (!e.isPrimary) return; // a second finger neither restarts nor ends a press
+			if (this.pressing) abortPress(); // a pointerup went missing (a context menu)
+			this.pressing = true;
+			this.pressPointer = e.pointerId;
+			this.endedDuringPress = false;
 			this.dragStart = coordOf(e);
-			this.dragStartOffset = this.stripOffset;
-			ruler.classList.add("is-dragging");
+			this.dragCrossStart = crossOf(e);
 			ruler.setPointerCapture(e.pointerId);
 		};
 		const onPointerMove = (e: PointerEvent) => {
-			if (!this.dragging) return;
+			if (!this.pressing || e.pointerId !== this.pressPointer) return;
 			const coord = coordOf(e);
-			if (Math.abs(coord - this.dragStart) > TAP_SLOP) this.dragMoved = true;
+			if (!this.scrubbing) {
+				const along = Math.abs(coord - this.dragStart);
+				const across = Math.abs(crossOf(e) - this.dragCrossStart);
+				// `pan-y` shares a horizontal ruler with the page, so a mostly vertical
+				// move is the start of a scroll even if it has wandered past the slop.
+				if (along <= TAP_SLOP || (this.horizontal && across > along)) return;
+				this.scrubbing = true;
+				// Measure from here so the strip doesn't jump by the slop.
+				this.dragStart = coord;
+				this.dragStartOffset = this.stripOffset;
+				ruler.classList.add("is-dragging");
+				announce("scrubstart");
+			}
 			const size = this.mainSize();
 			const raw = this.dragStartOffset + (coord - this.dragStart);
 			this.stripOffset = this.clampOffset(raw, size);
@@ -440,37 +514,41 @@ export class VideoCarouselElement extends HTMLElement {
 			const idx = this.scrubClip(this.timeAtY(size / 2, size));
 			if (idx !== this.current) this.select(idx, { userDriven: true });
 		};
-		const endDrag = (e: PointerEvent) => {
-			if (!this.dragging) return;
-			this.dragging = false;
-			ruler.classList.remove("is-dragging");
-			try {
-				ruler.releasePointerCapture(e.pointerId);
-			} catch {
-				/* pointer may already be released */
-			}
+		const onPointerUp = (e: PointerEvent) => {
+			if (!this.pressing || e.pointerId !== this.pressPointer) return;
+			const scrubbed = release();
 			const rect = ruler.getBoundingClientRect();
 			const size = this.horizontal ? rect.width : rect.height;
 			// Drag: snap to the clip at the center marker. Tap: snap to the clip
 			// nearest the tapped position along the main axis.
-			const at = this.dragMoved
+			const at = scrubbed
 				? size / 2
 				: this.horizontal
 					? e.clientX - rect.left
 					: e.clientY - rect.top;
-			this.select(this.nearestClip(this.timeAtY(at, size)), {
-				userDriven: true,
-			});
+			const target = this.nearestClip(this.timeAtY(at, size));
+			// The clip that ended is still the one showing: move on rather than
+			// replaying it, which would never announce an end again. Landing on another
+			// clip has already started that one, so the old end no longer counts.
+			if (this.endedDuringPress && target === this.current) {
+				this.select(this.current + 1);
+			} else {
+				this.select(target, { userDriven: true });
+			}
+			if (scrubbed) announce("scrubend", { cancelled: false });
+		};
+		const onPointerCancel = (e: PointerEvent) => {
+			if (this.pressing && e.pointerId === this.pressPointer) abortPress();
 		};
 		ruler.addEventListener("pointerdown", onPointerDown);
 		ruler.addEventListener("pointermove", onPointerMove);
-		ruler.addEventListener("pointerup", endDrag);
-		ruler.addEventListener("pointercancel", endDrag);
+		ruler.addEventListener("pointerup", onPointerUp);
+		ruler.addEventListener("pointercancel", onPointerCancel);
 		this.listeners.push(() => {
 			ruler.removeEventListener("pointerdown", onPointerDown);
 			ruler.removeEventListener("pointermove", onPointerMove);
-			ruler.removeEventListener("pointerup", endDrag);
-			ruler.removeEventListener("pointercancel", endDrag);
+			ruler.removeEventListener("pointerup", onPointerUp);
+			ruler.removeEventListener("pointercancel", onPointerCancel);
 		});
 
 		// Keyboard: arrows step through clips; Home/End jump to first/last (no wrap,
@@ -580,6 +658,7 @@ export class VideoCarouselElement extends HTMLElement {
 		const changed = index !== this.current;
 		const clip = this.clips[index];
 		this.current = index;
+		this.endedDuringPress = false; // this select restarts or replaces what ended
 
 		// Tick on user-driven changes only (not autoplay, not a no-op re-select).
 		// Throttle to TICK_MIN_GAP_MS: a fast drag-scrub crosses many clips within a
@@ -623,6 +702,7 @@ export class VideoCarouselElement extends HTMLElement {
 
 		if (this.descEl) this.descEl.textContent = clip.desc;
 		if (this.locEl) this.locEl.textContent = clip.loc;
+		if (this.dateEl) this.dateEl.textContent = clip.date;
 
 		this.ruler?.setAttribute("aria-valuenow", String(index));
 		this.ruler?.setAttribute(
@@ -633,6 +713,11 @@ export class VideoCarouselElement extends HTMLElement {
 		// Let layout settle on the first paint before measuring the ruler height.
 		if (initial) requestAnimationFrame(() => this.scrollToClip(index, false));
 		else this.scrollToClip(index, true);
+
+		const detail: VideoCarouselChangeDetail = { index, clip, userDriven, changed };
+		this.dispatchEvent(
+			new CustomEvent("video-carousel:change", { bubbles: true, detail })
+		);
 	}
 
 	/**
@@ -687,11 +772,11 @@ export class VideoCarouselElement extends HTMLElement {
 		const strip = this.strip;
 		if (!ruler || !strip) return;
 
-		// Mid-drag the pointer owns the strip offset (live-scrub select() calls land
+		// Mid-scrub the pointer owns the strip offset (live-scrub select() calls land
 		// here); don't re-center onto the clip or it would fight the finger. On
-		// release endDrag clears `dragging` before its select(), so the final clip
+		// release `scrubbing` is cleared before the final select(), so the last clip
 		// still settles + tweens normally.
-		if (this.dragging) return;
+		if (this.scrubbing) return;
 
 		this.stripOffset = this.offsetFor(this.clipTimes[i], this.mainSize());
 

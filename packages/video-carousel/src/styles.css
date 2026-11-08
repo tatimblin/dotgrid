@@ -628,6 +628,9 @@ video-carousel[caption-overlay] .vc__cap-line:has(.vc__loc:empty) {
 	height: var(--vc-ruler-h);
 	align-self: auto;
 	cursor: ew-resize;
+	/* The browser keeps vertical pans, so a page scroll can start on the strip, and
+	   hands over horizontal drags. A pan it claims arrives as a pointercancel. */
+	touch-action: pan-y;
 	order: 2; /* below the card (ruler is first in DOM order) */
 }
 
