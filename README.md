@@ -130,7 +130,7 @@ The clip list is authored in light DOM, so the dates and captions are readable b
 
 `<video-carousel>` doesn't import `<dotted-grid>`. It drives the one in its markup, so install and import both. Give the grid `no-loop` so the carousel advances when a clip ends.
 
-Attributes: `ruler-side` (`left` | `right`), `orientation` (`vertical` | `horizontal`; unset flips to horizontal at 640px and below), `fill`, `scene`, `caption-overlay`, `ruler-baseline` (`top` | `bottom`), and `tick-src` (URL of a tick sound; unset means silent; muted while `localStorage.sound === "off"`, re-read on a `soundchange` event).
+Attributes: `ruler-side` (`left` | `right`), `orientation` (`vertical` | `horizontal`; unset flips to horizontal at 640px and below), `fill`, `scene`, `caption-overlay`, `ruler-baseline` (`top` | `bottom`), `axis` (`even` gives one tick per clip at a 13px pitch, ignoring the dates and with no year labels; the horizontal ruler still reserves `--vc-ruler-h`; unset places ticks by date), and `tick-src` (URL of a tick sound; unset means silent; muted while `localStorage.sound === "off"`, re-read on a `soundchange` event).
 
 Geometry knobs are `--vc-*` custom properties on `:root`; see [`styles.css`](packages/video-carousel/src/styles.css).
 

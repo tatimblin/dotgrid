@@ -81,6 +81,7 @@ export interface VideoCarouselChangeDetail {
  * Ticks sit on a continuous time axis at a fixed cadence (TICKS_PER_YEAR), so
  * clips generally land mid-tick or on alternating ticks — intended. Ticks that
  * fall on a January (a whole year) are longer and carry the year in small text.
+ * `axis="even"` swaps that for one tick per clip at the same pitch, with no years.
  *
  * The clip list is authored in the light DOM by the Astro wrapper: the ruler
  * (`[data-vc-ruler]`) holds one `<button class="vc__tick vc__tick--major">` per
@@ -354,28 +355,39 @@ export class VideoCarouselElement extends HTMLElement {
 		ruler.setAttribute("aria-valuemax", String(this.clips.length - 1));
 		ruler.classList.toggle("vc__ruler--horizontal", this.horizontal);
 
-		// Clip times: parse dates; if any fails, fall back to synthetic spacing so
-		// the ruler still renders sensibly.
-		this.clipTimes = this.clips.map((c) => parseClipTime(c.date));
-		if (this.clipTimes.some((t) => !Number.isFinite(t))) {
+		// `axis="even"`: one tick per clip at an even pitch, ignoring the dates, for
+		// lists too bunched in time to scrub. Each clip takes the next cadence step,
+		// so every position calculation below works unchanged.
+		const even = this.getAttribute("axis") === "even";
+		let tickCount: number;
+		if (even) {
 			this.clipTimes = this.clips.map((_, i) => i * STEP_YEARS);
+			this.axisStart = 0;
+			tickCount = this.clips.length;
+		} else {
+			// Clip times: parse dates; if any fails, fall back to synthetic spacing so
+			// the ruler still renders sensibly.
+			this.clipTimes = this.clips.map((c) => parseClipTime(c.date));
+			if (this.clipTimes.some((t) => !Number.isFinite(t))) {
+				this.clipTimes = this.clips.map((_, i) => i * STEP_YEARS);
+			}
+
+			// Dates are only month-precise, so runs of clips sharing a month (e.g. four
+			// "April 2025" clips) collapse onto ONE strip offset — dragging can't land on
+			// the inner ones and the selection sits dead across a run, then jumps. Nudge
+			// each same-time run into distinct, still-chronological sub-positions: keep
+			// the first member on its true time and fan the rest forward across a slice of
+			// the room before the next distinct date (capped so they stay within a tick).
+			this.spreadSameTimeClips();
+
+			// Snap the axis to whole cadence steps and pad one step on each end so the
+			// first/last clip is never flush against a strip edge.
+			const tMin = Math.min(...this.clipTimes);
+			const tMax = Math.max(...this.clipTimes);
+			this.axisStart = Math.floor(tMin / STEP_YEARS) * STEP_YEARS - STEP_YEARS;
+			const axisEnd = Math.ceil(tMax / STEP_YEARS) * STEP_YEARS + STEP_YEARS;
+			tickCount = Math.round((axisEnd - this.axisStart) / STEP_YEARS) + 1;
 		}
-
-		// Dates are only month-precise, so runs of clips sharing a month (e.g. four
-		// "April 2025" clips) collapse onto ONE strip offset — dragging can't land on
-		// the inner ones and the selection sits dead across a run, then jumps. Nudge
-		// each same-time run into distinct, still-chronological sub-positions: keep
-		// the first member on its true time and fan the rest forward across a slice of
-		// the room before the next distinct date (capped so they stay within a tick).
-		this.spreadSameTimeClips();
-
-		// Snap the axis to whole cadence steps and pad one step on each end so the
-		// first/last clip is never flush against a strip edge.
-		const tMin = Math.min(...this.clipTimes);
-		const tMax = Math.max(...this.clipTimes);
-		this.axisStart = Math.floor(tMin / STEP_YEARS) * STEP_YEARS - STEP_YEARS;
-		const axisEnd = Math.ceil(tMax / STEP_YEARS) * STEP_YEARS + STEP_YEARS;
-		const tickCount = Math.round((axisEnd - this.axisStart) / STEP_YEARS) + 1;
 
 		this.strip = document.createElement("div");
 		this.strip.className = "vc__strip";
@@ -384,7 +396,8 @@ export class VideoCarouselElement extends HTMLElement {
 		this.tickTimes = [];
 		for (let k = 0; k < tickCount; k++) {
 			const time = this.axisStart + k * STEP_YEARS;
-			const isYear = Math.abs(time - Math.round(time)) < 1e-6;
+			// An even axis has no calendar, so a year label would misplace.
+			const isYear = !even && Math.abs(time - Math.round(time)) < 1e-6;
 			const tick = document.createElement("span");
 			tick.className = isYear ? "vc__tick vc__tick--year" : "vc__tick";
 			tick.setAttribute("aria-hidden", "true");

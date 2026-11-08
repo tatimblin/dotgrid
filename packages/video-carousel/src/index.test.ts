@@ -508,3 +508,70 @@ describe("styles", () => {
 		expect(rule(".vc__ruler")).toContain("touch-action: none");
 	});
 });
+
+describe('axis="even"', () => {
+	// Seven clips bunched by date: three in one month, the rest years apart.
+	const bunched = ["Apr 2025", "Apr 2025", "Apr 2025", "Jun 2025", "Jan 2026", "Jan 2027", "Jan 2030"].map(
+		(date, i) => ({ src: `${i}.mp4`, desc: `${i}`, loc: "", date })
+	);
+	const strip = (c: ReturnType<typeof mount>) => c.ruler.children[0];
+
+	test("makes one tick per clip at an even 13px pitch", () => {
+		const c = mount({ axis: "even" }, bunched);
+		const ticks = strip(c).children;
+		expect(ticks).toHaveLength(bunched.length);
+		expect(ticks.map((t) => t.style.left)).toEqual(
+			bunched.map((_, i) => `${(i * 13).toFixed(1)}px`)
+		);
+	});
+
+	test("lays out along Y on a vertical ruler", () => {
+		const c = mount({ axis: "even", orientation: "vertical" }, bunched);
+		expect(strip(c).children.map((t) => t.style.top)).toEqual(
+			bunched.map((_, i) => `${(i * 13).toFixed(1)}px`)
+		);
+		expect(strip(c).style.transform).toBe(`translateY(${CENTER.toFixed(1)}px)`);
+	});
+
+	test("omits year ticks and labels, even on a whole-year step", () => {
+		const c = mount({ axis: "even" }, bunched); // step 6 would be a whole year
+		expect(strip(c).children.some((t) => t.classes.has("vc__tick--year"))).toBe(false);
+		expect(strip(c).querySelectorAll(".vc__tick-year")).toHaveLength(0);
+	});
+
+	test("puts the selected tick under the center marker", () => {
+		const c = mount({ axis: "even" }, bunched);
+		expect(c.offset()).toBe(CENTER);
+		for (let i = 1; i < bunched.length; i++) {
+			c.key("ArrowRight");
+			expect(c.offset()).toBe(CENTER - i * 13);
+		}
+	});
+
+	test("reaches every clip by dragging, one tick at a time", () => {
+		const c = mount({ axis: "even" }, bunched);
+		c.pointer("pointerdown", CENTER);
+		c.pointer("pointermove", CENTER - 5);
+		const reached = [c.index()];
+		for (let x = CENTER - 5; x > CENTER - 5 - 6 * 13 - 1; x--) {
+			c.pointer("pointermove", x);
+			if (c.index() !== reached.at(-1)) reached.push(c.index());
+		}
+		expect(reached).toEqual([0, 1, 2, 3, 4, 5, 6]);
+		c.pointer("pointerup", CENTER - 5 - 6 * 13 - 1);
+		expect(c.index()).toBe(6);
+	});
+
+	test("taps the tick nearest the finger", () => {
+		const c = mount({ axis: "even" }, bunched);
+		c.pointer("pointerdown", CENTER + 3 * 13 + 2);
+		c.pointer("pointerup", CENTER + 3 * 13 + 2);
+		expect(c.index()).toBe(3);
+	});
+
+	test("the default axis still spaces by date and labels the years", () => {
+		const c = mount({}, bunched);
+		expect(strip(c).children.length).toBeGreaterThan(bunched.length);
+		expect(strip(c).querySelectorAll(".vc__tick-year").length).toBeGreaterThan(0);
+	});
+});
