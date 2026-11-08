@@ -73,12 +73,9 @@ uniform float uTime;        // seconds, for the shimmer pulse
 uniform float uShimmer;     // fraction 0..1 of dots that shimmer (0 => off)
 uniform float uRevealBoost; // 0 = raw sampled color, 1 = snap to ANSI palette
 
-// INTRO WIPE. 0 = nothing drawn (flat backdrop), 1 = the full image. Cells
-// cross in by BRIGHTNESS — the highlights arrive first and the shadows last,
-// so the picture develops out of the background like a photographic print
-// rather than cross-fading as one flat layer. 1 disables it entirely.
+// INTRO. 0 = nothing drawn (flat backdrop), 1 = the full image: every dot's
+// size, scaled by it at once. 1 disables it.
 uniform float uIntro;
-uniform float uIntroJitter; // randomness in the wavefront, in brightness units
 
 // "cover" mapping: fit the video across the canvas without stretching,
 // centered, cropping the overflowing axis.
@@ -319,7 +316,7 @@ void main() {
 	//
 	// Deliberately AFTER quantization so the setting composes with "levels" as
 	// "drop the bottom N rungs" rather than shifting where every rung falls,
-	// and BEFORE the intro wipe so a cut-off cell stays empty throughout the
+	// and BEFORE the intro so a cut-off cell stays empty throughout the
 	// entrance instead of growing in and then popping out at the end.
 	//
 	// <= , so cutoff exactly on a rung (0.2 with levels=5) clears that rung
@@ -363,45 +360,19 @@ void main() {
 	}
 
 	// Where this dot sits on the ink ramp (uInk -> uInkHi). Taken BEFORE the
-	// intro scales amount, so a dot growing in already wears its final colour.
+	// intro scales amount, so a dot growing in already wears its final look:
+	// its colour, shape, bloom, highlight lift and hatch all key off this, and
+	// only its size grows.
 	float inkT = clamp(amount, 0.0, 1.0);
 
-	// INTRO WIPE, scaling "amount" -- the dot's SIZE driver -- rather than the
-	// final color. That makes each dot GROW from nothing to its true size, so
-	// the reveal speaks the grid's own vocabulary: the quantity that encodes
-	// brightness also encodes arrival. Fading the finished image instead would
-	// just be a cross-dissolve with extra steps.
-	//
-	// The wavefront is a moving threshold on brightness: at uIntro = t, cells
-	// brighter than roughly (1 - t) have arrived and dimmer ones have not, with
-	// a soft shoulder so the edge is a gradient rather than a hard cut.
-	// Highlights therefore land first and the shadows fill in last.
-	//
-	// Deliberately AFTER the level quantization: the ramp fixes each dot's
-	// TARGET size and the intro then scales continuously toward it. Quantizing
-	// afterwards instead would make every dot climb the ramp's discrete steps
-	// on its way in, which reads as chunky stair-stepping mid-animation.
-	//
-	// Gated on < 1.0 so the steady state costs nothing -- a uniform branch, so
-	// every fragment takes the same path and there is no warp divergence.
-	// Per-cell arrival, 0 = not yet here, 1 = fully arrived. Kept in scope past
-	// this block because the CRT layers below have to honour it too.
-	float arrived = 1.0;
-	if (uIntro < 1.0) {
-		// Rank this cell on the wavefront by its own dot size (raw: polarity
-		// applied, before quantization), NOT its brightness, so the ink side of
-		// the image develops first whichever polarity carries it. Plus a little
-		// per-cell noise so the boundary breaks into grain instead of sweeping
-		// as a visible contour through flat regions of the image.
-		float rank = raw + (hash(cell) - 0.5) * uIntroJitter;
-		// Widen the sweep past both ends so uIntro 0 is genuinely empty (even
-		// the brightest cell is out) and 1 is genuinely complete (even the
-		// darkest is in), jitter included.
-		const float SHOULDER = 0.22; // softness of the arrival edge
-		float front = mix(1.0 + uIntroJitter, -uIntroJitter - SHOULDER, uIntro);
-		arrived = smoothstep(front, front + SHOULDER, rank);
-		amount *= arrived;
-	}
+	// INTRO, scaling "amount" -- the dot's SIZE driver -- rather than the final
+	// colour: every dot grows TOGETHER from nothing to the size the video gives
+	// it, so the picture fades up whole, already in its final composition, and
+	// nothing lands first to flash. Scaled after the level quantization, so a
+	// dot grows smoothly toward its step instead of climbing the ramp's steps.
+	// The CRT layers below honour it too.
+	float arrived = uIntro;
+	amount *= arrived;
 
 	// Dot silhouette. Three shapes share the same half-width (device px);
 	// only the edge test differs.
@@ -437,10 +408,10 @@ void main() {
 	} else {
 		// Morph: dim/small dots read as circles, bright dots pull toward a
 		// rounded square (corner radius shrinks as brightness rises).
-		float cornerR = min(halfW, mix(halfW * 0.9, halfW * 0.25, smoothstep(0.15, 0.7, amount)));
+		float cornerR = min(halfW, mix(halfW * 0.9, halfW * 0.25, smoothstep(0.15, 0.7, inkT)));
 		vec2 qd = absD - vec2(halfW - cornerR);
 		float sdRound = length(max(qd, 0.0)) + min(max(qd.x, qd.y), 0.0) - cornerR;
-		float sq = smoothstep(0.15, 0.7, amount);
+		float sq = smoothstep(0.15, 0.7, inkT);
 		sd = mix(circleDist - halfW, sdRound, sq);
 		mask = (halfW > 0.0) ? 1.0 - smoothstep(-AA, AA, sd) : 0.0;
 	}
@@ -451,8 +422,8 @@ void main() {
 	// they read as glowing phosphor rather than a flat, larger dot.
 	float glow = 0.0;
 	float rim = 0.0;
-	if (uBloom > 0.0 && amount > 0.5 && halfW > 0.0) {
-		float bright = smoothstep(0.5, 1.0, amount);
+	if (uBloom > 0.0 && inkT > 0.5 && halfW > 0.0) {
+		float bright = smoothstep(0.5, 1.0, inkT);
 		float haloW = max(2.0, halfW * 0.9);
 		glow = (sd > 0.0) ? (1.0 - smoothstep(0.0, haloW, sd)) * bright * uBloom * 0.5 : 0.0;
 		float rimPx = max(1.0, halfW * 0.3);
@@ -462,13 +433,12 @@ void main() {
 
 	// Cross-hatch engraving in the darkest cells: a rotated dot-lattice whose
 	// marks grow denser as brightness falls (branch-gated to shadow cells).
-	// NB the * arrived at the end: this layer keys off LOW amount, and the intro
-	// wipe drives amount toward 0 — so without it the hatch would grow STRONGER
-	// the less of a cell had arrived, actively drawing the shadow texture over
-	// the very cells the wipe is holding back.
+	// Keyed off inkT, the dot's size BEFORE the intro scaled it: the intro
+	// shrinks every dot, so keyed off amount the hatch would mark the mid-tones
+	// while they grow in. And * arrived at the end, so it fades up with the rest.
 	float hatch = 0.0;
-	if (uCrosshatch > 0.0 && amount < 0.4 && cellOn > 0.0) {
-		float shadow = smoothstep(0.4, 0.0, amount); // 1 in the darkest cells
+	if (uCrosshatch > 0.0 && inkT < 0.4 && cellOn > 0.0) {
+		float shadow = smoothstep(0.4, 0.0, inkT); // 1 in the darkest cells
 		float spacing = uCell * 0.7;
 		float ca = cos(0.4363), sa = sin(0.4363);   // ~25deg
 		vec2 rp = vec2(ca * px.x - sa * px.y, sa * px.x + ca * px.y);
@@ -529,12 +499,12 @@ void main() {
 	}
 
 	// Highlight lift: push the fullest dots toward uGlow so they glow. Keyed on
-	// amount (the value that drives dot size, so the biggest dots glow under
-	// either polarity). Attenuated by (1 - colorRestore) so a dot currently
+	// inkT (the dot's full size, so the biggest dots glow under either polarity,
+	// and through the intro). Attenuated by (1 - colorRestore) so a dot currently
 	// showing its revealed/shimmer color keeps it instead of being washed out.
 	// When bloom drives the highlight glow, fold back the standing highlight-lift
 	// so the two don't double-count (bloom is the stronger, explicit version).
-	float hiLift = smoothstep(HI_THRESHOLD, 1.0, amount) * HI_STRENGTH
+	float hiLift = smoothstep(HI_THRESHOLD, 1.0, inkT) * HI_STRENGTH
 		* (1.0 - colorRestore) * (1.0 - clamp(uBloom, 0.0, 1.0));
 	dot = mix(dot, uGlow, hiLift);
 
