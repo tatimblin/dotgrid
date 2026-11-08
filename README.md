@@ -90,9 +90,8 @@ You theme the grid with the CSS variables. Scope a preset to a theme and the ele
 | `shimmer` | Percent of dots that flash their true colour now and then. Empty means 8. |
 | `reveal-boost` | 0..1. How far a revealed colour snaps to a vivid ANSI palette. Default 0.3. |
 | `no-loop` | Plays once and dispatches a bubbling `dotted-grid:ended` event on the last frame. |
-| `intro` | Develops the picture in once on arrival, fullest dots first. Empty means 2600 ms; a number sets the duration. |
+| `intro` | Fades the picture up once on arrival: every dot grows together from nothing to its size. Empty means 1200 ms; a number sets the duration. |
 | `intro-delay` | Milliseconds to hold the grid empty before the intro. Default 500. |
-| `intro-jitter` | Grain in the intro's wavefront. Default 0.16. |
 | `xfade` | Blends clip changes (a `src` swap) per cell instead of cutting. Empty means 1600 ms. |
 | `xfade-mode` | `threshold` (default) or `rain`. |
 | `xfade-live` | Keeps both clips playing through the blend. |

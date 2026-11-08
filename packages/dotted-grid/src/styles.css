@@ -45,10 +45,9 @@ dotted-grid:not([data-ready]) canvas {
    declaration. Fallbacks included because this package is consumed standalone. */
 @media (prefers-reduced-motion: no-preference) {
 	/* :not([intro]) — the two entrances are mutually exclusive. With `intro` the
-	   SHADER does the reveal, developing the picture in brightest-dots-first; a
-	   simultaneous opacity fade would be a cross-dissolve layered on top of a wipe,
-	   which muddies both (the wipe's early highlights would arrive dimmed, so the
-	   ordering that is the whole point of it stops reading). One or the other. */
+	   SHADER does the reveal, growing every dot in from nothing; an opacity fade
+	   on top would dim it twice over, so the picture would sit faint for most of
+	   the intro and arrive late. One or the other. */
 	dotted-grid:not([intro]) canvas {
 		opacity: 0;
 		transition-property: opacity;

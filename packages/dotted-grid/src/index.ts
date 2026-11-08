@@ -10,12 +10,11 @@ const DEFAULTS = {
 	colorReveal: 80, // pointer trail radius (CSS px) when `color-reveal` is empty
 	shimmer: 8, // percent of dots that flash when `shimmer` is empty
 	revealBoost: 0.3, // vividness of revealed color: 0 = raw sample, 1 = "ascii" pop
-	// --- intro wipe (the fullest dots first) ---
-	introMs: 2600, // duration of the develop-in when `intro` is present but empty
-	introDelayMs: 500, // hold the grid empty this long first, so the wipe reads as
+	// --- intro (every dot grows in together) ---
+	introMs: 1200, // duration of the fade-up when `intro` is present but empty
+	introDelayMs: 500, // hold the grid empty this long first, so the intro reads as
 	// a deliberate entrance rather than something already half-finished by the time
 	// the eye lands on it
-	introJitter: 0.16, // grain in the brightness wavefront (0 = a clean contour sweep)
 	// --- clip transition (see TRANSITIONS) ---
 	// Duration of a clip-to-clip transition when `xfade` is present but empty. Slow
 	// enough to be read as a deliberate effect: at ~700ms the per-cell modes (rain's
@@ -218,22 +217,18 @@ const devWarn: ((message: string) => void) | undefined = (
  *   no-loop       boolean; plays the video once instead of looping. On the final
  *                 frame it dispatches a bubbling `dotted-grid:ended` CustomEvent so
  *                 a host (e.g. a carousel) can advance. Absent => loops (default).
- *   intro         boolean-or-ms; develop the picture in ONCE on arrival, fullest
- *                 dots first (the ink side, whichever the polarity). Each cell's dot grows from nothing to its true size as
- *                 a brightness threshold sweeps from the highlights down into the
- *                 shadows, so the image resolves out of the backdrop like a print in
- *                 developer. Absent => off (the image simply appears); empty =>
- *                 default 2600ms; a number sets the duration.
+ *   intro         boolean-or-ms; fade the picture up ONCE on arrival: every dot
+ *                 grows together from nothing to the size the video gives it, so
+ *                 the image arrives whole, in its final composition, with no
+ *                 flash. Absent => off (the image simply appears); empty =>
+ *                 default 1200ms; a number sets the duration.
  *                 The clock starts at the FIRST DECODED FRAME, so a slow network
- *                 delays the wipe instead of eating it, and it never replays — a
- *                 clip swap mid-carousel must not re-develop the frame.
- *   intro-delay   ms to hold the grid EMPTY before the wipe starts (default 500).
+ *                 delays the intro instead of eating it, and it never replays — a
+ *                 clip swap mid-carousel must not fade the frame in again.
+ *   intro-delay   ms to hold the grid EMPTY before the intro starts (default 500).
  *                 Also measured from the first decoded frame, so delay + duration
  *                 compose into one predictable entrance however long the video took
- *                 to arrive. 0 => start developing immediately.
- *   intro-jitter  brightness-units of per-cell noise in that wavefront (default
- *                 0.16), so the arrival edge breaks into grain instead of sweeping
- *                 as a visible contour line through flat areas. 0 => a clean sweep.
+ *                 to arrive. 0 => start immediately.
  *   xfade         boolean-or-ms; animate CLIP-TO-CLIP changes (a `src` swap) instead
  *                 of cutting. The outgoing clip's last frame is frozen into a second
  *                 texture at the swap, and the shader blends the two PER CELL — so
@@ -258,7 +253,7 @@ const devWarn: ((message: string) => void) | undefined = (
  *
  * The color reveal (trail + shimmer) is disabled while paused or under
  * prefers-reduced-motion, matching the animation gating. So is `intro` — a
- * develop-in is decorative, so that visitor gets the finished image immediately.
+ * fade-up is decorative, so that visitor gets the finished image immediately.
  *
  * Lifecycle mirrors the other packages (video-carousel): a `listeners`
  * cleanup array, a `rafId` guard, a `ResizeObserver`, and reduced-motion
@@ -281,7 +276,6 @@ export class DottedGridElement extends HTMLElement {
 			"no-loop",
 			"intro",
 			"intro-delay",
-			"intro-jitter",
 			"xfade",
 			"xfade-mode",
 			"xfade-live",
@@ -378,12 +372,12 @@ export class DottedGridElement extends HTMLElement {
 	 *  arrival and never re-fades mid-carousel (the swap has its own crossfade). */
 	private announcedReady = false;
 
-	/** Wall-clock ms at which the intro wipe started, or null when it isn't running.
-	 *  Started on the first textured frame (not on connect): the wipe reveals the
+	/** Wall-clock ms at which the intro started, or null when it isn't running.
+	 *  Started on the first textured frame (not on connect): the intro reveals the
 	 *  picture, so it can only begin once there IS a picture to reveal. */
 	private introStart: number | null = null;
-	/** Set once the wipe has run, so it plays as an ENTRANCE and never replays —
-	 *  a clip swap mid-carousel must not re-develop the whole frame. */
+	/** Set once the intro has run, so it plays as an ENTRANCE and never replays —
+	 *  a clip swap mid-carousel must not fade the whole frame in again. */
 	private introDone = false;
 
 	// Recent pointer positions (device px, canvas-relative) with timestamps,
@@ -917,27 +911,27 @@ export class DottedGridElement extends HTMLElement {
 	}
 
 	/**
-	 * Intro-wipe progress in [0,1]: 0 = blank grid, 1 = the finished image.
+	 * Intro progress in [0,1], the scale on every dot's size: 0 = blank grid,
+	 * 1 = the finished image.
 	 *
-	 * Returns 1 (wipe off) unless the `intro` attribute is present, and also for
-	 * reduced motion — a develop-in is decorative, so that visitor gets the image
+	 * Returns 1 (intro off) unless the `intro` attribute is present, and also for
+	 * reduced motion — a fade-up is decorative, so that visitor gets the image
 	 * outright. The clock starts at the first textured frame, so a slow network
-	 * delays the wipe rather than eating it.
+	 * delays the intro rather than eating it.
 	 *
-	 * Eased ease-OUT (not smoothstep): the wavefront should leave the highlights
-	 * promptly and then decelerate as it works down into the shadows, which is both
-	 * how a print actually develops and where the interesting detail is. A
-	 * symmetric smoothstep instead spends its slow phase at BOTH ends, and since the
-	 * shader's shoulder already softens the start, the two compounded into ~0.8s of
-	 * a 2.6s wipe where nothing perceptible happened.
+	 * Eased ease-OUT because a dot's ink is its AREA, the square of the size this
+	 * scales: easing the size out makes the ink arrive close to linearly (a
+	 * fifth of it a quarter of the way in, just over half at half), where a
+	 * linear size would hold the picture faint for the first half (a quarter of
+	 * the ink at half) and rush the rest.
 	 */
 	private introProgress(): number {
 		if (this.introDone || !this.hasAttribute("intro")) return 1;
 		if (this.reducedMotion?.matches) return 1;
 		if (this.introStart === null) return 0; // no frame yet: hold the grid empty
 
-		// Hold empty for the delay, THEN develop. Measured from the first decoded
-		// frame like the wipe itself, so the two compose into one predictable
+		// Hold empty for the delay, THEN fade up. Measured from the first decoded
+		// frame like the intro itself, so the two compose into one predictable
 		// entrance regardless of how long the video took to arrive.
 		// zero allowed: an explicit intro-delay="0" must mean "start immediately"
 		// rather than falling back to the default. Negatives read as 0.
@@ -1029,7 +1023,6 @@ export class DottedGridElement extends HTMLElement {
 			"uBloom",
 			"uCrosshatch",
 			"uIntro",
-			"uIntroJitter",
 			"uPrevTex",
 			"uXfade",
 			"uXfadeMode",
@@ -1283,15 +1276,11 @@ export class DottedGridElement extends HTMLElement {
 		gl.uniform1f(this.uniforms.uBloom, tone.bloom);
 		gl.uniform1f(this.uniforms.uCrosshatch, tone.crosshatch);
 
-		// Intro wipe. Read BEFORE the draw so this frame paints the current progress,
+		// Intro. Read BEFORE the draw so this frame paints the current progress,
 		// and note it must be sampled every frame while running — see the pump in
 		// announceReady() that keeps frames coming even when the video is paused.
 		const intro = this.introProgress();
 		gl.uniform1f(this.uniforms.uIntro, intro);
-		gl.uniform1f(
-			this.uniforms.uIntroJitter,
-			this.num("intro-jitter", DEFAULTS.introJitter)
-		);
 
 		// Clip transition, same contract as the intro: read before the draw, and keep
 		// frames coming while it runs (see the pump below).
@@ -1312,9 +1301,9 @@ export class DottedGridElement extends HTMLElement {
 		gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 		gl.bindVertexArray(null);
 
-		// Keep the wipe animating while it runs. The rAF/rVFC loop only runs when the
+		// Keep the intro animating while it runs. The rAF/rVFC loop only runs when the
 		// video is PLAYING, so a paused or reduced-motion-static grid would otherwise
-		// freeze the wipe at whatever progress its single one-shot paint captured.
+		// freeze the intro at whatever progress its single one-shot paint captured.
 		if (intro < 1 || xfade < 1) this.scheduleRender();
 
 		// The canvas now holds real pixels. Announce AFTER the draw (not when
@@ -1355,7 +1344,7 @@ export class DottedGridElement extends HTMLElement {
 	private announceReady() {
 		if (this.announcedReady) return;
 		this.announcedReady = true;
-		// Start the intro wipe from the moment there is actually an image to develop,
+		// Start the intro from the moment there is actually an image to show,
 		// so a slow video delays the animation rather than consuming it.
 		if (this.introStart === null) this.introStart = performance.now();
 		this.dataset.ready = "true";
@@ -1523,7 +1512,7 @@ export class DottedGridElement extends HTMLElement {
 			this.endTransition();
 			return 1;
 		}
-		return t * (2 - t); // easeOutQuad, matching the intro wipe
+		return t * (2 - t); // easeOutQuad, matching the intro
 	}
 
 	/**
