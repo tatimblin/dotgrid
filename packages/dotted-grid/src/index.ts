@@ -391,7 +391,18 @@ export class DottedGridElement extends HTMLElement {
 	private trailXY = new Float32Array(MAX_TRAIL * 2);
 	private trailAge = new Float32Array(MAX_TRAIL);
 
+	/** Set while a disconnect waits out its microtask before tearing down. */
+	private teardownPending = false;
+
 	connectedCallback() {
+		// Back before a pending teardown ran: the element was removed and
+		// re-inserted in one task (a view transition's persisted element, swapped
+		// in where `moveBefore` isn't available). Everything is still alive.
+		if (this.canvas) {
+			this.reattach();
+			return;
+		}
+
 		// A view transition can re-insert a PERSISTED element into a freshly built
 		// document, so nothing resolved against the old one survives into this life.
 		this.tone = null;
@@ -468,7 +479,38 @@ export class DottedGridElement extends HTMLElement {
 		this.applyPlaybackState();
 	}
 
+	/**
+	 * Moved with `moveBefore` (a view transition carrying a persisted element
+	 * across pages): the element never left the document, so the canvas, its
+	 * WebGL context, the playing video and the finished intro all carry over.
+	 * Defining this is what stops the browser from calling disconnect + connect.
+	 */
+	connectedMoveCallback() {
+		this.reattach();
+	}
+
+	/** Pick up a new place in the page without rebuilding: the tone may resolve
+	 *  differently under new ancestors, and the box may have resized. */
+	private reattach() {
+		this.tone = null;
+		this.reflectPaper();
+		if (!this.gl) return;
+		this.resize();
+		this.applyPlaybackState();
+	}
+
 	disconnectedCallback() {
+		// Torn down a microtask later, and only if still out of the document: a
+		// remove + re-insert in the same task (see connectedCallback) keeps it all.
+		if (this.teardownPending) return;
+		this.teardownPending = true;
+		queueMicrotask(() => {
+			this.teardownPending = false;
+			if (!this.isConnected) this.teardown();
+		});
+	}
+
+	private teardown() {
 		this.stopLoop(); // cancels the rVFC/rAF loop via the correct API
 		if (this.rafId !== null) cancelAnimationFrame(this.rafId);
 		this.rafId = null;

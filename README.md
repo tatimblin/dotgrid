@@ -103,6 +103,8 @@ Events: `dotted-grid:ready` fires after the first real draw (the element also ge
 
 Under `prefers-reduced-motion` the colour reveal, shimmer, intro and cross-fade are off.
 
+The element survives a move. With `moveBefore` (as a view-transition router uses for a persisted element), or a remove and re-insert in the same task, the canvas, WebGL context, playing video and finished intro carry over. A real removal tears it all down a microtask later.
+
 ## `<video-carousel>`
 
 The clip list is authored in light DOM, so the dates and captions are readable before JavaScript runs. There's one ruler button per clip, a stage holding a `<dotted-grid data-vc-grid>`, and a caption:
