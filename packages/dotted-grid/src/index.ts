@@ -50,6 +50,7 @@ const TRANSITIONS: Record<string, number> = {
 
 const MAX_DPR = 2; // default clamp on devicePixelRatio; per-instance via `max-dpr`
 const TRAIL_MS = 600; // trail lifetime — longer than fade-in so dots trail out slowly
+const STALL_MS = 1000; // a playing loop silent this long has died (see reviveLoop)
 
 /**
  * THEME FLIPS. One observer for every live element, on <html>'s class,
@@ -366,6 +367,7 @@ export class DottedGridElement extends HTMLElement {
 	private playing = false;
 	private useVfc = false;
 	private frameHandle: number | null = null;
+	private lastFrameAt = 0; // performance.now() of the loop's last tick
 	private rafId: number | null = null;
 
 	private visible = true; // in viewport (IntersectionObserver)
@@ -439,6 +441,16 @@ export class DottedGridElement extends HTMLElement {
 		this.reducedMotion.addEventListener("change", onMotionChange);
 		this.listeners.push(() =>
 			this.reducedMotion?.removeEventListener("change", onMotionChange)
+		);
+
+		// Back from a hidden tab, ask again: a browser that paused the clip while
+		// the page was away (iOS does) doesn't always resume it.
+		const onVisibility = () => {
+			if (document.visibilityState === "visible") this.applyPlaybackState();
+		};
+		document.addEventListener("visibilitychange", onVisibility);
+		this.listeners.push(() =>
+			document.removeEventListener("visibilitychange", onVisibility)
 		);
 
 		// Pointer trail for the color reveal. Always listen; the shader ignores the
@@ -765,14 +777,35 @@ export class DottedGridElement extends HTMLElement {
 		// host has to be told to advance before the clip is over — one transition's
 		// worth of lead time. timeupdate fires ~4x/sec, which is ample for a lead
 		// measured in hundreds of ms.
-		const onTimeUpdate = () => this.maybeAnnounceEnding(video);
+		// timeupdate also keeps running when the frame loop has died (see
+		// reviveLoop), so it doubles as the loop's watchdog.
+		const onTimeUpdate = () => {
+			this.maybeAnnounceEnding(video);
+			if (video === this.video) this.reviveLoop();
+		};
 		video.addEventListener("timeupdate", onTimeUpdate);
+
+		// A PAUSE WE DIDN'T ASK FOR. The element only pauses when it stops wanting
+		// to play, so a pause while it still wants to is the browser's: iOS pauses
+		// muted inline video on its own (power, interruptions, a backgrounded tab)
+		// and doesn't always resume it, which left the grid frozen. Play it again.
+		// Not at a no-loop clip's end, which pauses too: the host advances there.
+		const onPause = () => {
+			if (video !== this.video || video.ended) return;
+			if (this.wantsPlay() && document.visibilityState === "visible") {
+				video.play().catch(() => {
+					/* refused (e.g. Low Power Mode): the last frame stays painted */
+				});
+			}
+		};
+		video.addEventListener("pause", onPause);
 
 		this.videoCleanups.set(video, () => {
 			video.removeEventListener("loadeddata", onData);
 			video.removeEventListener("seeked", onData);
 			video.removeEventListener("ended", onEnded);
 			video.removeEventListener("timeupdate", onTimeUpdate);
+			video.removeEventListener("pause", onPause);
 		});
 	}
 
@@ -1137,6 +1170,7 @@ export class DottedGridElement extends HTMLElement {
 	private startLoop() {
 		if (this.playing) return;
 		this.playing = true;
+		this.lastFrameAt = performance.now();
 		const video = this.video as HTMLVideoElement & {
 			requestVideoFrameCallback?: (cb: () => void) => number;
 		};
@@ -1146,6 +1180,7 @@ export class DottedGridElement extends HTMLElement {
 			this.useVfc = true;
 			const tick = () => {
 				if (!this.playing) return;
+				this.lastFrameAt = performance.now();
 				this.frameHandle = video.requestVideoFrameCallback!(tick);
 				this.render();
 			};
@@ -1154,11 +1189,27 @@ export class DottedGridElement extends HTMLElement {
 			// Firefox fallback: display-synced rAF loop (the previous behavior).
 			this.useVfc = false;
 			const tick = () => {
+				this.lastFrameAt = performance.now();
 				this.frameHandle = requestAnimationFrame(tick);
 				this.render();
 			};
 			this.frameHandle = requestAnimationFrame(tick);
 		}
+	}
+
+	/**
+	 * Restart a loop that stopped ticking while its video plays on. An rVFC chain
+	 * is only as alive as its last callback, and a browser can drop one (iOS
+	 * Safari, around a pause, a loop or a re-insertion) without the video
+	 * stopping: the clip runs, nothing draws, and the grid looks paused. Called
+	 * from timeupdate (~4x a second while the clip advances), so a dead loop is
+	 * picked back up within about a second.
+	 */
+	private reviveLoop() {
+		if (!this.playing || this.video?.paused) return;
+		if (performance.now() - this.lastFrameAt < STALL_MS) return;
+		this.stopLoop();
+		this.startLoop();
 	}
 
 	private stopLoop() {
